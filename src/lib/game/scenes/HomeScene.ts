@@ -6,9 +6,9 @@ import { IncomeSystem } from "@/lib/game/systems/IncomeSystem";
 import { EventBus } from "@/lib/game/EventBus";
 
 const HOME_EQUIPMENT = [
-  { id: "yoga",   name: "Yoga Mat",   tex: "eq_yoga",   x: 120, y: 220, xpCost: 5, xpReward: 8,  tokens: 3, intensity: "LOW"    as const },
-  { id: "pushups",name: "Push-ups",   tex: "eq_cable",  x: 260, y: 220, xpCost: 5, xpReward: 8,  tokens: 3, intensity: "MEDIUM" as const },
-  { id: "pullup", name: "Pull-up Bar",tex: "eq_pullup", x: 200, y: 340, xpCost: 8, xpReward: 12, tokens: 5, intensity: "HIGH"   as const },
+  { id: "yoga",    name: "Yoga Mat",    tex: "eq_yoga",   x: 120, y: 220, xpCost: 5, xpReward: 8,  tokens: 3, intensity: "LOW"    as const },
+  { id: "pushups", name: "Push-ups",    tex: "eq_cable",  x: 260, y: 220, xpCost: 5, xpReward: 8,  tokens: 3, intensity: "MEDIUM" as const },
+  { id: "pullup",  name: "Pull-up Bar", tex: "eq_pullup", x: 200, y: 340, xpCost: 8, xpReward: 12, tokens: 5, intensity: "HIGH"   as const },
 ];
 
 export interface HomeSceneInitData {
@@ -24,6 +24,12 @@ export class HomeScene extends Phaser.Scene {
   private incomeSystem!: IncomeSystem;
   private initData: HomeSceneInitData = {};
 
+  // Ambient
+  private windowLightTimer = 0;
+  private windowLightDir = 1;
+  private windowGlow!: Phaser.GameObjects.Graphics;
+  private dustEmitter!: Phaser.GameObjects.Particles.ParticleEmitter;
+
   constructor() {
     super({ key: "HomeScene" });
   }
@@ -36,10 +42,9 @@ export class HomeScene extends Phaser.Scene {
     const W = this.scale.width;
     const H = this.scale.height;
 
-    this.cameras.main.setBackgroundColor(0x0f0e0a);
+    this.cameras.main.setBackgroundColor(0x0c0b07);
     this.drawHomeLayout(W, H);
 
-    // Equipment
     HOME_EQUIPMENT.forEach((cfg) => {
       const eq = new Equipment({
         scene: this, x: cfg.x, y: cfg.y,
@@ -50,7 +55,6 @@ export class HomeScene extends Phaser.Scene {
       this.equipment.push(eq);
     });
 
-    // Player
     this.player = new Player({
       scene: this, x: W / 2, y: H - 100,
       bodyType: this.initData.playerBodyType ?? "AVERAGE",
@@ -58,25 +62,41 @@ export class HomeScene extends Phaser.Scene {
       transformationStage: this.initData.playerTransformationStage ?? 0,
     });
 
-    this.cameras.main.startFollow(this.player, true, 0.12, 0.12);
+    this.cameras.main.startFollow(this.player, true, 0.1, 0.1);
+    this.cameras.main.fadeIn(400, 12, 11, 7);
 
-    // Controller
     this.controller = new PlayerController(this, this.player);
     this.controller.onInteractCallback = (wx, wy) => this.tryInteract(wx, wy);
 
     this.incomeSystem = new IncomeSystem(this);
+
+    // Ambient dust in sunbeam
+    this.dustEmitter = this.add.particles(45, 130, "particle_dust", {
+      speedX: { min: 2, max: 12 },
+      speedY: { min: -4, max: 4 },
+      lifespan: { min: 3000, max: 6000 },
+      scale: { min: 0.3, max: 0.9 },
+      alpha: { start: 0.45, end: 0 },
+      quantity: 1,
+      frequency: 500,
+    });
+    this.dustEmitter.setDepth(5);
 
     EventBus.on("workout:complete", ({ xpEarned, tokensEarned, equipmentId }) => {
       const eq = this.equipment.find((e) => e.equipId === equipmentId);
       if (eq) {
         this.incomeSystem.spawnXpReward(eq.x, eq.y - 40, xpEarned);
         this.incomeSystem.spawnTokenReward(eq.x + 20, eq.y - 20, tokensEarned);
+        this.cameras.main.shake(100, 0.003);
       }
       this.player.setPlayerState("IDLE");
     });
 
     EventBus.on("scene:switch", ({ to }) => {
-      if (to !== "HomeScene") this.scene.start(to);
+      if (to !== "HomeScene") {
+        this.cameras.main.fadeOut(250, 12, 11, 7);
+        this.cameras.main.once("camerafadeoutcomplete", () => this.scene.start(to));
+      }
     });
 
     EventBus.emit("scene:ready", { name: "HomeScene" });
@@ -84,26 +104,84 @@ export class HomeScene extends Phaser.Scene {
 
   private drawHomeLayout(W: number, H: number) {
     const g = this.add.graphics();
-    // Warm home floor
-    g.fillStyle(0x1a160d).fillRect(0, 0, W, H);
-    g.fillStyle(0x1e1a10).fillRect(20, 60, W - 40, H - 120);
-    // Wood plank lines
-    g.lineStyle(1, 0x2a2415, 0.8);
-    for (let y = 80; y < H - 60; y += 24) g.lineBetween(20, y, W - 20, y);
-    // Window (left wall)
-    g.fillStyle(0x1a3a4a, 0.4).fillRect(25, 80, 40, 80);
-    g.lineStyle(2, 0x4cc9f0, 0.4).strokeRect(25, 80, 40, 80);
-    // Mirror (right wall)
-    g.fillStyle(0x1e2235, 0.5).fillRect(W - 55, 80, 30, H * 0.45);
-    g.lineStyle(2, 0x6c47ff, 0.5).strokeRect(W - 55, 80, 30, H * 0.45);
-    // Wall accent
-    g.lineStyle(2, 0xf59e0b, 0.3).strokeRect(20, 60, W - 40, H - 120);
+
+    // Warm dark base
+    g.fillStyle(0x0c0b07).fillRect(0, 0, W, H);
+    // Main floor — warm wood tone
+    g.fillStyle(0x1c1810).fillRect(16, 50, W - 32, H - 110);
+
+    // Wood plank lines (horizontal)
+    g.lineStyle(1, 0x231e12, 0.9);
+    for (let y = 74; y < H - 70; y += 22) g.lineBetween(16, y, W - 16, y);
+    // Plank seams (vertical, offset per row)
+    g.lineStyle(1, 0x1e1a0e, 0.5);
+    for (let y = 74; y < H - 70; y += 44) {
+      for (let x = 16 + ((y / 22) % 2) * 40; x < W - 16; x += 80) {
+        g.lineBetween(x, y, x, y + 22);
+      }
+    }
+
+    // Skirting board
+    g.fillStyle(0x2a2418, 1);
+    g.fillRect(16, 50, W - 32, 8);
+    g.fillRect(16, H - 60, W - 32, 8);
+
+    // Window (left wall) — with sunbeam cone
+    const winX = 22, winY = 70, winW = 50, winH = 90;
+    // Sunbeam cone
+    this.windowGlow = this.add.graphics().setDepth(1).setAlpha(0.07);
+    this.windowGlow.fillStyle(0xfff4cc, 1);
+    this.windowGlow.fillTriangle(winX + winW/2, winY + winH, winX - 20, H - 60, winX + winW + 30, H - 60);
+    // Window frame outer
+    g.fillStyle(0x3a2f1e, 1).fillRoundedRect(winX - 3, winY - 3, winW + 6, winH + 6, 4);
+    // Sky view
+    g.fillStyle(0x1a2e4a, 0.8).fillRect(winX, winY, winW, winH);
+    // Morning light gradient in window
+    g.fillGradientStyle(0xff9950, 0xff9950, 0x4488cc, 0x4488cc, 0.25);
+    g.fillRect(winX, winY, winW, winH / 2);
+    g.fillStyle(0x4488cc, 0.3).fillRect(winX, winY + winH / 2, winW, winH / 2);
+    // Window cross bars
+    g.lineStyle(2, 0x3a2f1e, 1);
+    g.lineBetween(winX + winW / 2, winY, winX + winW / 2, winY + winH);
+    g.lineBetween(winX, winY + winH / 2, winX + winW, winY + winH / 2);
+    // Window frame
+    g.lineStyle(3, 0x4a3e28, 1).strokeRoundedRect(winX, winY, winW, winH, 3);
+    // Window glass sheen
+    g.fillStyle(0xffffff, 0.06).fillTriangle(winX + 2, winY + 2, winX + winW * 0.4, winY + 2, winX + 2, winY + winH * 0.4);
+
+    // Mirror (right wall) — large
+    const mirX = W - 55, mirY = 65, mirW = 38, mirH = H * 0.5;
+    g.fillStyle(0x2a2418, 1).fillRoundedRect(mirX - 4, mirY - 4, mirW + 8, mirH + 8, 5);
+    g.fillStyle(0x1e2538, 0.8).fillRect(mirX, mirY, mirW, mirH);
+    // Mirror reflection tint
+    g.fillStyle(0x3a4a6a, 0.2).fillRect(mirX, mirY, mirW, mirH);
+    // Mirror sheen streaks
+    g.fillStyle(0xffffff, 0.06).fillRect(mirX + 3, mirY + 4, 8, mirH - 10);
+    g.fillStyle(0xffffff, 0.03).fillRect(mirX + 14, mirY + 4, 4, mirH - 10);
+    g.lineStyle(2, 0x5a4e38, 1).strokeRoundedRect(mirX, mirY, mirW, mirH, 3);
+    // "REFLECTION" label above mirror
+    this.add.text(mirX + mirW / 2, mirY - 10, "MIRROR", {
+      fontFamily: "Inter, sans-serif", fontSize: "7px",
+      color: "#4a3e28", letterSpacing: 2,
+    }).setOrigin(0.5).setDepth(2);
+
+    // Bookshelf / shelves on back wall
+    g.fillStyle(0x2a2010, 1).fillRoundedRect(W * 0.4, 55, 60, 10, 2);
+    g.lineStyle(1, 0x4a3820, 0.6).strokeRoundedRect(W * 0.4, 55, 60, 10, 2);
+    // Trophies / items on shelf
+    const itemColors = [0xffd700, 0x00d4aa, 0x6c47ff];
+    for (let i = 0; i < 3; i++) {
+      g.fillStyle(itemColors[i], 0.8).fillRoundedRect(W * 0.4 + 8 + i * 18, 48, 10, 8, 2);
+    }
 
     // Room label
-    this.add.text(W / 2, 38, "🏠 HOME WORKOUT", {
-      fontFamily: "Inter, sans-serif", fontSize: "10px",
-      color: "#f59e0b", letterSpacing: 2,
-    }).setOrigin(0.5).setDepth(1);
+    this.add.text(W / 2, 34, "🏠 HOME WORKOUT ROOM", {
+      fontFamily: "Inter, sans-serif", fontSize: "9px",
+      color: "#3a2e1a", letterSpacing: 2,
+    }).setOrigin(0.5).setDepth(2);
+
+    // Wall accent border
+    g.lineStyle(2, 0xf59e0b, 0.18).strokeRect(16, 50, W - 32, H - 110);
   }
 
   private tryInteract(worldX: number, worldY: number) {
@@ -115,6 +193,13 @@ export class HomeScene extends Phaser.Scene {
         this.player.y = eq.y + 50;
         this.player.setPlayerState("WORKING_OUT");
         eq.startWorkout(20_000);
+        // Zoom pulse on activation
+        this.tweens.add({
+          targets: this.cameras.main, zoom: 1.08, duration: 280, ease: "Back.easeOut",
+          onComplete: () => {
+            this.tweens.add({ targets: this.cameras.main, zoom: 1.0, duration: 450, ease: "Sine.easeOut" });
+          },
+        });
         EventBus.emit("workout:started", { equipmentId: eq.equipId, intensity: eq.intensity });
         return;
       }
@@ -129,11 +214,21 @@ export class HomeScene extends Phaser.Scene {
       eq.showPrompt(dist < 70 && !eq.isOccupied);
     }
     this.player.updateDepth();
+
+    // Animate sunbeam
+    this.windowLightTimer += delta;
+    if (this.windowLightTimer > 80) {
+      this.windowLightTimer = 0;
+      const a = this.windowGlow.alpha + this.windowLightDir * 0.0003;
+      if (a > 0.1 || a < 0.04) this.windowLightDir *= -1;
+      this.windowGlow.setAlpha(a);
+    }
   }
 
   shutdown() {
     EventBus.off("workout:complete");
     EventBus.off("scene:switch");
     this.controller.destroy();
+    this.dustEmitter?.destroy();
   }
 }

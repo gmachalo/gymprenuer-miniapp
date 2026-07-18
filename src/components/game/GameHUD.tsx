@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { EventBus } from "@/lib/game/EventBus";
 import { XpBar } from "@/components/xp/XpBar";
+import { AudioManager } from "@/lib/game/systems/AudioManager";
 
 interface GameHUDProps {
   playerName: string;
@@ -17,6 +18,33 @@ interface GameHUDProps {
 }
 
 type ActiveScene = "GymScene" | "HomeScene";
+
+// Animated number counter hook
+function useAnimatedNumber(target: number, duration = 500) {
+  const [display, setDisplay] = useState(target);
+  const ref = useRef<number>(target);
+  const animRef = useRef<number>(0);
+
+  useEffect(() => {
+    const start = ref.current;
+    const diff = target - start;
+    if (diff === 0) return;
+    const startTime = performance.now();
+    const animate = (now: number) => {
+      const elapsed = now - startTime;
+      const progress = Math.min(1, elapsed / duration);
+      const eased = 1 - Math.pow(1 - progress, 3); // ease-out cubic
+      const value = Math.round(start + diff * eased);
+      setDisplay(value);
+      ref.current = value;
+      if (progress < 1) animRef.current = requestAnimationFrame(animate);
+    };
+    animRef.current = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(animRef.current);
+  }, [target, duration]);
+
+  return display;
+}
 
 export function GameHUD({
   playerName,
@@ -40,6 +68,12 @@ export function GameHUD({
   const [npcCount, setNpcCount]          = useState(0);
   const [pendingIncome, setPendingIncome] = useState(0);
 
+  const displayTokens = useAnimatedNumber(tokens);
+  const displayPending = useAnimatedNumber(pendingIncome);
+
+  // Init audio on mount
+  useEffect(() => { AudioManager.init(); }, []);
+
   // ── Subscribe to EventBus ─────────────────────────────────────
   useEffect(() => {
     const onXpChanged = (d: { currentXp: number; overflowXp: number; restUntil: string | null }) => {
@@ -49,12 +83,10 @@ export function GameHUD({
       setLastRegenAt(new Date().toISOString());
     };
     const onWorkoutComplete = async (d: { xpEarned: number; tokensEarned: number; equipmentId?: string; intensity?: string }) => {
-      // Show popup immediately (optimistic UI)
       setWorkoutReward({ xp: d.xpEarned, tokens: d.tokensEarned });
       setTokens((t) => t + d.tokensEarned);
-      setTimeout(() => setWorkoutReward(null), 3000);
+      setTimeout(() => setWorkoutReward(null), 3500);
 
-      // Persist to DB
       try {
         const res = await fetch("/api/game/workout/gym", {
           method: "POST",
@@ -68,7 +100,6 @@ export function GameHUD({
         });
         if (res.ok) {
           const data = await res.json();
-          // Update XP bar with real DB values
           setCurrentXp(data.currentXp);
           setOverflowXp(data.overflowXp);
           setRestUntil(data.restUntil ?? null);
@@ -137,153 +168,304 @@ export function GameHUD({
 
   // ── Scene switch ─────────────────────────────────────────────
   const switchScene = (to: ActiveScene) => {
+    AudioManager.playUIClick();
     setActiveScene(to);
     EventBus.emit("scene:switch", { to });
   };
 
-  if (isFirstPerson) return null; // HUD hidden in first-person view
+  if (isFirstPerson) return null;
 
   return (
     <>
-      {/* ── Top HUD ── */}
-      <div
-        style={{
-          position: "fixed",
-          top: 0, left: 0, right: 0,
-          zIndex: 50,
-          padding: "10px 14px 8px",
-          background: "linear-gradient(180deg, rgba(13,17,23,0.97) 0%, rgba(13,17,23,0) 100%)",
-          pointerEvents: "none",
-        }}
-      >
-        {/* Player info row */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <div style={{ width: 32, height: 32, borderRadius: "50%", background: "linear-gradient(135deg,#6c47ff,#00d4aa)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "16px" }}>
-              🏋️
-            </div>
-            <div>
-              <div style={{ fontSize: "13px", fontWeight: 700, color: "#fff" }}>{playerName}</div>
-              <div style={{ fontSize: "10px", color: "#6b7280" }}>🔥 {streakCount} day streak</div>
-            </div>
+      {/* ── Top HUD Bar ── */}
+      <div style={styles.topBar}>
+        {/* Player info */}
+        <div style={styles.playerRow}>
+          <div style={styles.avatarOuter}>
+            <div style={styles.avatar}>🏋️</div>
           </div>
-          <div style={{ display: "flex", gap: "8px", alignItems: "center", pointerEvents: "auto" }}>
-            {/* NPC count */}
+          <div>
+            <div style={styles.playerName}>{playerName}</div>
+            <div style={styles.streakBadge}>🔥 {streakCount} day streak</div>
+          </div>
+          <div style={styles.badgeRow}>
             {npcCount > 0 && (
-              <span style={{ fontSize: "11px", background: "rgba(0,212,170,0.15)", color: "#00d4aa", borderRadius: "99px", padding: "3px 9px", border: "1px solid rgba(0,212,170,0.3)" }}>
-                👥 {npcCount}
-              </span>
+              <span style={styles.npcBadge}>👥 {npcCount}</span>
             )}
-            {/* Pending income */}
-            {pendingIncome > 0 && (
-              <span style={{ fontSize: "11px", background: "rgba(255,215,0,0.15)", color: "#ffd700", borderRadius: "99px", padding: "3px 9px", border: "1px solid rgba(255,215,0,0.3)", animation: "pulse-badge 1s ease-in-out infinite" }}>
-                💰 +{pendingIncome}
-              </span>
+            {displayPending > 0 && (
+              <span style={styles.incomeBadge}>💰 +{displayPending}</span>
             )}
-            <span style={{ fontSize: "12px", background: "rgba(255,215,0,0.1)", color: "#ffd700", borderRadius: "99px", padding: "4px 10px", border: "1px solid rgba(255,215,0,0.25)", fontWeight: 700 }}>
-              {tokens.toLocaleString()} 🪙
+            <span style={styles.tokenBadge}>
+              {displayTokens.toLocaleString()} 🪙
             </span>
           </div>
         </div>
 
         {/* XP Bar */}
-        <div style={{ pointerEvents: "auto" }}>
+        <div style={{ pointerEvents: "auto", marginTop: "6px" }}>
           <XpBar currentXp={currentXp} overflowXp={overflowXp} restUntil={restUntil} lastXpRegenAt={lastRegenAt} />
         </div>
       </div>
 
-      {/* ── Scene switcher (bottom nav) ── */}
-      <div
-        style={{
-          position: "fixed",
-          bottom: 100,
-          left: "50%",
-          transform: "translateX(-50%)",
-          zIndex: 50,
-          display: "flex",
-          gap: "8px",
-          background: "rgba(13,17,23,0.9)",
-          borderRadius: "12px",
-          padding: "6px 8px",
-          border: "1px solid rgba(108,71,255,0.3)",
-          pointerEvents: "auto",
-        }}
-      >
-        <button
-          onClick={() => switchScene("HomeScene")}
-          style={{
-            padding: "6px 14px",
-            borderRadius: "8px",
-            border: "none",
-            cursor: "pointer",
-            fontSize: "12px",
-            fontWeight: activeScene === "HomeScene" ? 700 : 400,
-            background: activeScene === "HomeScene" ? "#6c47ff" : "transparent",
-            color: activeScene === "HomeScene" ? "#fff" : "#6b7280",
-            transition: "all 0.15s",
-          }}
-        >
-          🏠 Home
-        </button>
-        {hasGym ? (
+      {/* ── Scene switcher ── */}
+      <div style={styles.sceneSwitcher}>
+        <div style={styles.sceneSwitcherInner}>
           <button
-            onClick={() => switchScene("GymScene")}
+            onClick={() => switchScene("HomeScene")}
             style={{
-              padding: "6px 14px",
-              borderRadius: "8px",
-              border: "none",
-              cursor: "pointer",
-              fontSize: "12px",
-              fontWeight: activeScene === "GymScene" ? 700 : 400,
-              background: activeScene === "GymScene" ? "#6c47ff" : "transparent",
-              color: activeScene === "GymScene" ? "#fff" : "#6b7280",
-              transition: "all 0.15s",
+              ...styles.sceneBtn,
+              ...(activeScene === "HomeScene" ? styles.sceneBtnActive : {}),
             }}
           >
-            🏢 {gymName ?? "Gym"}
+            🏠 Home
           </button>
-        ) : (
-          <a href="/gyms" style={{ padding: "6px 14px", borderRadius: "8px", fontSize: "12px", color: "#6b7280", textDecoration: "none" }}>
-            + Join Gym
-          </a>
-        )}
-        <a href="/dashboard" style={{ padding: "6px 14px", borderRadius: "8px", fontSize: "12px", color: "#6b7280", textDecoration: "none", display: "flex", alignItems: "center" }}>
-          ☰
-        </a>
+          {hasGym ? (
+            <button
+              onClick={() => switchScene("GymScene")}
+              style={{
+                ...styles.sceneBtn,
+                ...(activeScene === "GymScene" ? styles.sceneBtnActive : {}),
+              }}
+            >
+              🏢 {gymName ?? "Gym"}
+            </button>
+          ) : (
+            <a href="/gyms" style={styles.joinLink}>+ Join Gym</a>
+          )}
+          <a href="/dashboard" style={styles.menuLink}>☰</a>
+          {/* Active indicator bar */}
+          <div style={{
+            ...styles.tabIndicator,
+            left: activeScene === "HomeScene" ? "8px" : hasGym ? "50%" : "8px",
+          }} />
+        </div>
       </div>
 
       {/* ── Workout reward popup ── */}
       {workoutReward && (
-        <div
-          style={{
-            position: "fixed",
-            top: "35%",
-            left: "50%",
-            transform: "translateX(-50%)",
-            zIndex: 100,
-            textAlign: "center",
-            animation: "reward-popup 0.4s ease-out",
-            background: "rgba(13,17,23,0.95)",
-            border: "1px solid #6c47ff",
-            borderRadius: "16px",
-            padding: "20px 32px",
-          }}
-        >
-          <div style={{ fontSize: "40px", marginBottom: "8px" }}>🎉</div>
-          <div style={{ fontSize: "22px", fontWeight: 900, color: "#a78bfa" }}>+{workoutReward.xp} XP</div>
-          <div style={{ fontSize: "18px", fontWeight: 700, color: "#ffd700" }}>+{workoutReward.tokens} 🪙</div>
+        <div style={styles.rewardPopup}>
+          <div style={styles.rewardEmoji}>🎉</div>
+          <div style={styles.rewardXp}>+{workoutReward.xp} XP</div>
+          <div style={styles.rewardTokens}>+{workoutReward.tokens} 🪙</div>
+          {/* Confetti dots */}
+          <div style={styles.confettiContainer}>
+            {Array.from({ length: 12 }).map((_, i) => (
+              <div key={i} style={{
+                ...styles.confettiDot,
+                left: `${10 + Math.random() * 80}%`,
+                animationDelay: `${i * 0.08}s`,
+                backgroundColor: ["#a78bfa", "#00d4aa", "#ffd700", "#f72585", "#4cc9f0"][i % 5],
+              }} />
+            ))}
+          </div>
         </div>
       )}
 
       <style>{`
         @keyframes pulse-badge {
-          0%,100% { opacity:1; } 50% { opacity:0.6; }
+          0%, 100% { opacity: 1; transform: scale(1); }
+          50% { opacity: 0.7; transform: scale(1.05); }
         }
-        @keyframes reward-popup {
-          0% { transform:translateX(-50%) scale(0.7); opacity:0; }
-          100% { transform:translateX(-50%) scale(1); opacity:1; }
+        @keyframes reward-slide-in {
+          0% { transform: translateX(-50%) translateY(20px) scale(0.8); opacity: 0; }
+          50% { transform: translateX(-50%) translateY(-8px) scale(1.05); opacity: 1; }
+          100% { transform: translateX(-50%) translateY(0) scale(1); opacity: 1; }
+        }
+        @keyframes confetti-fall {
+          0% { transform: translateY(-20px) rotate(0deg); opacity: 1; }
+          100% { transform: translateY(60px) rotate(360deg); opacity: 0; }
+        }
+        @keyframes tab-slide {
+          from { opacity: 0; }
+          to { opacity: 1; }
         }
       `}</style>
     </>
   );
 }
+
+// ── Styles ────────────────────────────────────────────────────────────────────
+const styles: Record<string, React.CSSProperties> = {
+  topBar: {
+    position: "fixed",
+    top: 0, left: 0, right: 0,
+    zIndex: 50,
+    padding: "10px 12px 10px",
+    background: "linear-gradient(180deg, rgba(9,9,15,0.96) 0%, rgba(9,9,15,0.85) 70%, rgba(9,9,15,0) 100%)",
+    backdropFilter: "blur(12px)",
+    WebkitBackdropFilter: "blur(12px)",
+    pointerEvents: "none",
+  },
+  playerRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    marginBottom: "4px",
+  },
+  avatarOuter: {
+    width: 36, height: 36,
+    borderRadius: "50%",
+    background: "linear-gradient(135deg, #6c47ff 0%, #00d4aa 100%)",
+    padding: "2px",
+    flexShrink: 0,
+  },
+  avatar: {
+    width: "100%", height: "100%",
+    borderRadius: "50%",
+    background: "#0d0d18",
+    display: "flex", alignItems: "center", justifyContent: "center",
+    fontSize: "16px",
+  },
+  playerName: {
+    fontSize: "13px", fontWeight: 700, color: "#e8e8f0",
+    letterSpacing: "0.3px",
+  },
+  streakBadge: {
+    fontSize: "10px", color: "#5a5a70",
+  },
+  badgeRow: {
+    display: "flex", gap: "6px", alignItems: "center",
+    marginLeft: "auto", pointerEvents: "auto",
+  },
+  npcBadge: {
+    fontSize: "10px",
+    background: "rgba(0,212,170,0.12)",
+    color: "#00d4aa",
+    borderRadius: "99px",
+    padding: "3px 8px",
+    border: "1px solid rgba(0,212,170,0.25)",
+    fontWeight: 600,
+  },
+  incomeBadge: {
+    fontSize: "10px",
+    background: "rgba(255,215,0,0.12)",
+    color: "#ffd700",
+    borderRadius: "99px",
+    padding: "3px 8px",
+    border: "1px solid rgba(255,215,0,0.25)",
+    fontWeight: 600,
+    animation: "pulse-badge 1.2s ease-in-out infinite",
+  },
+  tokenBadge: {
+    fontSize: "12px",
+    background: "rgba(255,215,0,0.08)",
+    color: "#ffd700",
+    borderRadius: "99px",
+    padding: "4px 10px",
+    border: "1px solid rgba(255,215,0,0.2)",
+    fontWeight: 700,
+    letterSpacing: "0.3px",
+  },
+  sceneSwitcher: {
+    position: "fixed",
+    bottom: 100,
+    left: "50%",
+    transform: "translateX(-50%)",
+    zIndex: 50,
+    pointerEvents: "auto",
+  },
+  sceneSwitcherInner: {
+    display: "flex",
+    gap: "4px",
+    background: "rgba(9,9,15,0.92)",
+    backdropFilter: "blur(16px)",
+    WebkitBackdropFilter: "blur(16px)",
+    borderRadius: "14px",
+    padding: "5px 6px",
+    border: "1px solid rgba(108,71,255,0.2)",
+    position: "relative" as const,
+    boxShadow: "0 4px 24px rgba(0,0,0,0.4), 0 0 1px rgba(108,71,255,0.3)",
+  },
+  sceneBtn: {
+    padding: "7px 16px",
+    borderRadius: "10px",
+    border: "none",
+    cursor: "pointer",
+    fontSize: "12px",
+    fontWeight: 500,
+    background: "transparent",
+    color: "#5a5a70",
+    transition: "all 0.2s ease",
+    position: "relative" as const,
+    zIndex: 1,
+  },
+  sceneBtnActive: {
+    fontWeight: 700,
+    background: "linear-gradient(135deg, rgba(108,71,255,0.9), rgba(108,71,255,0.7))",
+    color: "#ffffff",
+    boxShadow: "0 2px 8px rgba(108,71,255,0.3)",
+  },
+  joinLink: {
+    padding: "7px 14px",
+    borderRadius: "10px",
+    fontSize: "12px",
+    color: "#5a5a70",
+    textDecoration: "none",
+  },
+  menuLink: {
+    padding: "7px 12px",
+    borderRadius: "10px",
+    fontSize: "14px",
+    color: "#5a5a70",
+    textDecoration: "none",
+    display: "flex",
+    alignItems: "center",
+  },
+  tabIndicator: {
+    position: "absolute" as const,
+    bottom: "2px",
+    width: "40%",
+    height: "2px",
+    borderRadius: "2px",
+    background: "linear-gradient(90deg, #6c47ff, #00d4aa)",
+    transition: "left 0.3s cubic-bezier(0.4,0,0.2,1)",
+    animation: "tab-slide 0.3s ease",
+  },
+  rewardPopup: {
+    position: "fixed" as const,
+    top: "32%",
+    left: "50%",
+    transform: "translateX(-50%)",
+    zIndex: 100,
+    textAlign: "center" as const,
+    animation: "reward-slide-in 0.5s cubic-bezier(0.34, 1.56, 0.64, 1)",
+    background: "rgba(9,9,15,0.96)",
+    border: "1px solid rgba(108,71,255,0.5)",
+    borderRadius: "20px",
+    padding: "24px 40px 20px",
+    backdropFilter: "blur(20px)",
+    WebkitBackdropFilter: "blur(20px)",
+    boxShadow: "0 8px 40px rgba(108,71,255,0.25), 0 0 80px rgba(108,71,255,0.08)",
+    overflow: "hidden" as const,
+  },
+  rewardEmoji: {
+    fontSize: "48px",
+    marginBottom: "6px",
+    filter: "drop-shadow(0 2px 8px rgba(255,215,0,0.4))",
+  },
+  rewardXp: {
+    fontSize: "26px", fontWeight: 900,
+    color: "#c4b5fd",
+    letterSpacing: "1px",
+    textShadow: "0 0 20px rgba(108,71,255,0.5)",
+  },
+  rewardTokens: {
+    fontSize: "20px", fontWeight: 700,
+    color: "#ffd700",
+    marginTop: "4px",
+    textShadow: "0 0 12px rgba(255,215,0,0.3)",
+  },
+  confettiContainer: {
+    position: "absolute" as const,
+    inset: 0,
+    overflow: "hidden" as const,
+    pointerEvents: "none" as const,
+  },
+  confettiDot: {
+    position: "absolute" as const,
+    top: 0,
+    width: "5px", height: "5px",
+    borderRadius: "50%",
+    animation: "confetti-fall 1.2s ease-in forwards",
+  },
+};

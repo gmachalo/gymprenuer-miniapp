@@ -86,7 +86,7 @@ export function GameWorld({
     setIsWorking(true);
     setWorkoutView("world");
     try {
-      const endpoint = isHome ? "/api/game/workout/home" : "/api/game/workout/home";
+      const endpoint = isHome ? "/api/game/workout/home" : "/api/game/workout/gym";
       const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/db/prisma";
+import { applyXpReward, addTotalXp } from "@/lib/game/engine";
 
 const REST_DURATION_MS = 30 * 60 * 1000;
 
@@ -65,17 +66,18 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Add XP reward — overflow if bar is full
-  const canAddToBar = Math.max(0, 100 - newCurrent);
-  const addToBar    = Math.min(xpEarned, canAddToBar);
-  newCurrent  = Math.min(100, newCurrent + addToBar);
-  newOverflow += xpEarned - addToBar;
+  // Add XP reward — overflow if bar is full, capped at 10 000 total
+  const xpReward = applyXpReward(newCurrent, newOverflow, xpEarned);
+  newCurrent = xpReward.currentXp;
+  newOverflow = xpReward.overflowXp;
+  const actualXpEarned = xpReward.xpAdded;
 
   // Rest if exhausted
   const exhausted = newCurrent === 0 && newOverflow === 0;
   const restUntil = exhausted ? new Date(Date.now() + REST_DURATION_MS) : null;
 
   const tokenBigInt = BigInt(Math.max(0, Math.floor(tokensEarned)));
+  const totalXpUpdate = addTotalXp(user.totalXp, actualXpEarned);
 
   const character = await prisma.character.findFirst({
     where: { userId: session.user.id, isActive: true },
@@ -88,7 +90,7 @@ export async function POST(req: NextRequest) {
         currentXp:      newCurrent,
         overflowXp:     newOverflow,
         offChainTokens: user.offChainTokens + tokenBigInt,
-        totalXp:        user.totalXp + BigInt(xpEarned),
+        totalXp:        totalXpUpdate.totalXp,
         ...(restUntil ? { restUntil } : {}),
         lastXpRegenAt: new Date(),
       },
@@ -107,17 +109,16 @@ export async function POST(req: NextRequest) {
         durationMins: intensity === "HIGH" ? 45 : intensity === "LOW" ? 20 : 30,
         intensity:    intensity as "LOW" | "MEDIUM" | "HIGH",
         adherencePct: 100,
-        xpEarned,
+        xpEarned:       actualXpEarned,
         tokensEarned: tokenBigInt,
         fitnessBoost: 0.03,
-        notes: `Equipment: ${equipmentId}`,
       },
     }),
   ]);
 
   return Response.json({
     success:     true,
-    xpEarned,
+    xpEarned:     actualXpEarned,
     tokensEarned: tokenBigInt.toString(),
     currentXp:   updatedUser.currentXp,
     overflowXp:  updatedUser.overflowXp,

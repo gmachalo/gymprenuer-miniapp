@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/db/prisma";
+import { applyXpReward, addTotalXp } from "@/lib/game/engine";
 
 const HOME_XP_COST = 5;
 const HOME_XP_REWARD = 8;
@@ -49,7 +50,7 @@ export async function POST(req: NextRequest) {
 
   // Intensity multiplier
   const multiplier = intensity === "HIGH" ? 1.5 : intensity === "LOW" ? 0.6 : 1.0;
-  const xpReward = Math.floor(HOME_XP_REWARD * multiplier);
+  const xpRewardAmount = Math.floor(HOME_XP_REWARD * multiplier);
   const tokenReward = BigInt(Math.floor(Number(HOME_TOKEN_REWARD) * multiplier));
 
   // Deduct XP cost (overflow first)
@@ -63,15 +64,17 @@ export async function POST(req: NextRequest) {
     newCurrent = Math.max(0, newCurrent - remainder);
   }
 
-  // Add XP reward (overflow if current >= 100)
-  const canAddToBar = Math.max(0, 100 - newCurrent);
-  const addToBar = Math.min(xpReward, canAddToBar);
-  newCurrent = Math.min(100, newCurrent + addToBar);
-  newOverflow += xpReward - addToBar;
+  // Add XP reward (overflow if current >= 100), capped at 10 000 total
+  const xpUpdate = applyXpReward(newCurrent, newOverflow, xpRewardAmount);
+  newCurrent = xpUpdate.currentXp;
+  newOverflow = xpUpdate.overflowXp;
+  const actualXpEarned = xpUpdate.xpAdded;
 
   // Rest if exhausted
   const exhausted = newCurrent === 0 && newOverflow === 0;
   const restUntil = exhausted ? new Date(Date.now() + REST_DURATION_MS) : null;
+
+  const totalXpUpdate = addTotalXp(user.totalXp, actualXpEarned);
 
   // Find or create user's active character
   const character = await prisma.character.findFirst({
@@ -85,7 +88,7 @@ export async function POST(req: NextRequest) {
         currentXp: newCurrent,
         overflowXp: newOverflow,
         offChainTokens: user.offChainTokens + tokenReward,
-        totalXp: user.totalXp + BigInt(xpReward),
+        totalXp: totalXpUpdate.totalXp,
         ...(restUntil ? { restUntil } : {}),
       },
       select: { currentXp: true, overflowXp: true, offChainTokens: true, restUntil: true },
@@ -98,7 +101,7 @@ export async function POST(req: NextRequest) {
         durationMins: intensity === "HIGH" ? 45 : intensity === "LOW" ? 20 : 30,
         intensity: intensity as "LOW" | "MEDIUM" | "HIGH",
         adherencePct: 100,
-        xpEarned: xpReward,
+        xpEarned: actualXpEarned,
         tokensEarned: tokenReward,
         fitnessBoost: 0.02,
       },
@@ -107,7 +110,7 @@ export async function POST(req: NextRequest) {
 
   return Response.json({
     success: true,
-    xpEarned: xpReward,
+    xpEarned: actualXpEarned,
     tokensEarned: tokenReward.toString(),
     currentXp: updatedUser.currentXp,
     overflowXp: updatedUser.overflowXp,

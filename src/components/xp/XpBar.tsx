@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { MAX_XP_ACCUMULATION } from "@/lib/game/engine";
 
 interface XpBarProps {
   currentXp: number;        // 0–100
@@ -130,7 +131,7 @@ export function XpBar({ currentXp, overflowXp, restUntil, lastXpRegenAt }: XpBar
       {/* Sub-row */}
       <div style={{ display: "flex", justifyContent: "space-between" }}>
         <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>
-          Total: {totalXp} XP
+          Total: {totalXp}/{MAX_XP_ACCUMULATION} XP
         </span>
         {!isResting && currentXp < 100 && (
           <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>

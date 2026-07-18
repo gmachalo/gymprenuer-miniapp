@@ -40,6 +40,43 @@ const INTENSITY_MULTIPLIER: Record<string, number> = {
 const DAILY_TOKEN_CAP = BigInt(200); // max tokens earnable per day
 const DAILY_XP_CAP = 400;
 
+export const MAX_XP_ACCUMULATION = 10000;
+export const MAX_XP_BAR = 100;
+
+/** Apply XP reward to the spendable pool (currentXp + overflowXp), capped at MAX_XP_ACCUMULATION. */
+export function applyXpReward(
+  currentXp: number,
+  overflowXp: number,
+  xpToAdd: number
+): { currentXp: number; overflowXp: number; xpAdded: number } {
+  const pool = currentXp + overflowXp;
+  const room = Math.max(0, MAX_XP_ACCUMULATION - pool);
+  const xpAdded = Math.min(xpToAdd, room);
+
+  if (xpAdded <= 0) {
+    return { currentXp, overflowXp, xpAdded: 0 };
+  }
+
+  const canAddToBar = Math.max(0, MAX_XP_BAR - currentXp);
+  const addToBar = Math.min(xpAdded, canAddToBar);
+
+  return {
+    currentXp: Math.min(MAX_XP_BAR, currentXp + addToBar),
+    overflowXp: overflowXp + (xpAdded - addToBar),
+    xpAdded,
+  };
+}
+
+/** Add to lifetime totalXp, capped at MAX_XP_ACCUMULATION. */
+export function addTotalXp(
+  current: bigint,
+  earned: number
+): { totalXp: bigint; xpAdded: number } {
+  const room = Math.max(0, MAX_XP_ACCUMULATION - Number(current));
+  const xpAdded = Math.min(earned, room);
+  return { totalXp: current + BigInt(xpAdded), xpAdded };
+}
+
 // Diminishing returns: each successive workout today earns less
 const DIMINISHING_RETURNS = [1.0, 0.6, 0.3, 0.1];
 
@@ -93,6 +130,26 @@ export function calculateWorkoutReward(input: WorkoutRewardInput): RewardResult 
   };
 }
 
+// ─── Workout XP Cost ──────────────────────────────────────────────────────────
+
+/**
+ * Calculate XP cost for a workout.
+ * Base: 1 XP per 5 minutes, scaled by intensity.
+ * Minimum cost: 3 XP.
+ */
+export function calculateWorkoutXpCost(
+  durationMins: number,
+  intensity: "LOW" | "MEDIUM" | "HIGH" | string
+): number {
+  const intensityMult: Record<string, number> = {
+    LOW: 0.6,
+    MEDIUM: 1.0,
+    HIGH: 1.5,
+  };
+  const mult = intensityMult[intensity] ?? 1.0;
+  return Math.max(3, Math.floor((durationMins / 5) * mult));
+}
+
 // ─── Character Stat Progression ───────────────────────────────────────────────
 
 export interface StatGain {
@@ -143,8 +200,8 @@ export function calculateStatGain(
 // ─── Transformation Stage ─────────────────────────────────────────────────────
 
 export function calculateTransformationStage(totalXp: bigint): number {
-  const xp = Number(totalXp);
-  if (xp >= 10000) return 5;
+  const xp = Math.min(Number(totalXp), MAX_XP_ACCUMULATION);
+  if (xp >= MAX_XP_ACCUMULATION) return 5;
   if (xp >= 5000) return 4;
   if (xp >= 2000) return 3;
   if (xp >= 800) return 2;

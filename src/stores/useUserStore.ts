@@ -1,5 +1,6 @@
 "use client";
 import { create } from "zustand";
+import { MAX_XP_ACCUMULATION } from "@/lib/game/engine";
 
 interface UserState {
   id: string;
@@ -29,7 +30,12 @@ export const useUserStore = create<UserStore>((set, get) => ({
   setUser: (user) => set({ user }),
   addXp: (xp) =>
     set((state) => ({
-      user: state.user ? { ...state.user, totalXp: state.user.totalXp + xp } : null,
+      user: state.user
+        ? {
+            ...state.user,
+            totalXp: Math.min(MAX_XP_ACCUMULATION, state.user.totalXp + xp),
+          }
+        : null,
     })),
   addTokens: (tokens) =>
     set((state) => ({

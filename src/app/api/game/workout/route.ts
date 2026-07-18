@@ -6,7 +6,12 @@ import {
   calculateStatGain,
   calculateTransformationStage,
   calculateStreakUpdate,
+  calculateWorkoutXpCost,
+  applyXpReward,
+  addTotalXp,
 } from "@/lib/game/engine";
+
+const REST_DURATION_MS = 30 * 60 * 1000; // 30 min
 
 // POST /api/game/workout/complete
 export async function POST(req: NextRequest) {
@@ -51,6 +56,37 @@ export async function POST(req: NextRequest) {
 
   if (!user) return Response.json({ error: "User not found" }, { status: 404 });
 
+  // Check rest
+  if (user.restUntil && user.restUntil > new Date()) {
+    return Response.json(
+      { error: "Character is resting", restUntil: user.restUntil.toISOString() },
+      { status: 400 }
+    );
+  }
+
+  // Calculate XP cost for this workout
+  const xpCost = calculateWorkoutXpCost(durationMins, intensity);
+
+  // Check XP: deduct from overflow first, then currentXp
+  const totalAvailable = user.currentXp + user.overflowXp;
+  if (totalAvailable < xpCost) {
+    return Response.json(
+      { error: "Not enough XP for this workout", currentXp: user.currentXp, overflowXp: user.overflowXp, xpCost },
+      { status: 400 }
+    );
+  }
+
+  // Deduct XP cost (overflow first)
+  let newOverflow = user.overflowXp;
+  let newCurrent = user.currentXp;
+  if (newOverflow >= xpCost) {
+    newOverflow -= xpCost;
+  } else {
+    const remainder = xpCost - newOverflow;
+    newOverflow = 0;
+    newCurrent = Math.max(0, newCurrent - remainder);
+  }
+
   const fitnessBoost = Number(fitnessSync?.fitnessBoost ?? 0);
   const streakCount = streak?.currentStreak ?? 0;
 
@@ -62,6 +98,16 @@ export async function POST(req: NextRequest) {
     fitnessBoost,
     dailyWorkoutCount: todayCount,
   });
+
+  // Add XP reward back (overflow if bar is full), capped at 10 000 total
+  const xpReward = applyXpReward(newCurrent, newOverflow, reward.totalXp);
+  newCurrent = xpReward.currentXp;
+  newOverflow = xpReward.overflowXp;
+  const xpEarned = xpReward.xpAdded;
+
+  // Rest if exhausted
+  const exhausted = newCurrent === 0 && newOverflow === 0;
+  const restUntil = exhausted ? new Date(Date.now() + REST_DURATION_MS) : null;
 
   // Update streak
   const streakUpdate = calculateStreakUpdate(
@@ -76,7 +122,8 @@ export async function POST(req: NextRequest) {
     : null;
 
   // New XP total
-  const newTotalXp = (user.totalXp ?? BigInt(0)) + BigInt(reward.totalXp);
+  const totalXpUpdate = addTotalXp(user.totalXp ?? BigInt(0), xpEarned);
+  const newTotalXp = totalXpUpdate.totalXp;
   const newStage = calculateTransformationStage(newTotalXp);
 
   // Run all DB writes in a transaction
@@ -91,19 +138,23 @@ export async function POST(req: NextRequest) {
         durationMins,
         intensity,
         adherencePct,
-        xpEarned: reward.totalXp,
+        xpEarned: xpEarned,
         tokensEarned: reward.totalTokens,
         fitnessBoost: reward.fitnessBoostApplied,
       },
     });
 
-    // 2. Update user tokens & XP
+    // 2. Update user tokens, XP bar & overflow
     await tx.user.update({
       where: { id: userId },
       data: {
+        currentXp: newCurrent,
+        overflowXp: newOverflow,
         totalXp: newTotalXp,
         offChainTokens: user.offChainTokens + reward.totalTokens,
         level: Math.max(user.level, Math.floor(Math.log2(Number(newTotalXp) / 50 + 1)) + 1),
+        lastXpRegenAt: new Date(),
+        ...(restUntil ? { restUntil } : {}),
       },
     });
 
@@ -176,6 +227,11 @@ export async function POST(req: NextRequest) {
     statGain,
     newStreak: streakUpdate.newStreak,
     newStage,
+    xpCost,
+    currentXp: newCurrent,
+    overflowXp: newOverflow,
+    exhausted,
+    restUntil: restUntil?.toISOString() ?? null,
   });
 }
 

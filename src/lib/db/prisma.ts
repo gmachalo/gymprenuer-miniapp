@@ -12,10 +12,19 @@ function createPrismaClient() {
   }
   // Strip pgbouncer=true — it's a Prisma CLI param, not understood by the pg driver
   const connectionString = (raw ?? "").replace(/[?&]pgbouncer=true/i, "").replace(/[?&]$/, "");
-  const adapter = new PrismaPg({ connectionString });
+  const adapter = new PrismaPg({
+    connectionString,
+    max: 5,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 10_000,
+  });
   return new PrismaClient({
     adapter,
     log: process.env.NODE_ENV === "development" ? ["error", "warn"] : ["error"],
+    transactionOptions: {
+      maxWait: 10_000,
+      timeout: 15_000,
+    },
   });
 }
 
