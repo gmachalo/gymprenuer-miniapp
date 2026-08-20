@@ -31,6 +31,10 @@ export class HomeScene extends Phaser.Scene {
   private windowGlow!: Phaser.GameObjects.Graphics;
   private dustEmitter!: Phaser.GameObjects.Particles.ParticleEmitter;
 
+  // Gaming-corner RGB accent strip (hue-cycles along the baseboard)
+  private rgbStrip!: Phaser.GameObjects.Graphics;
+  private rgbHue = 0;
+
   // Bound EventBus handler references — kept so shutdown() can remove exactly
   // these listeners (EventBus.off(type) with no handler clears ALL listeners
   // for that event, including AudioManager's and GameHUD's, so we must pass
@@ -72,6 +76,14 @@ export class HomeScene extends Phaser.Scene {
     const W = this.scale.width;
     const H = this.scale.height;
 
+    // create() re-runs every time this scene is (re)started, but `equipment`
+    // is a plain instance field — Phaser only calls the class constructor
+    // once, so without resetting it here it keeps every equipment reference
+    // from every previous session, including ones Phaser has since destroyed
+    // (accessing a destroyed GameObject's `.scene` throws).
+    this.equipment = [];
+    this.activeEquipment = null;
+
     this.cameras.main.setBackgroundColor(0x0c0b07);
     this.drawHomeLayout(W, H);
 
@@ -111,6 +123,11 @@ export class HomeScene extends Phaser.Scene {
       frequency: 500,
     });
     this.dustEmitter.setDepth(5);
+
+    // Gaming-corner RGB LED strip along the baseboard — hue-cycles for that
+    // classic gamer-setup accent, giving the cozy room some arcade energy.
+    this.rgbStrip = this.add.graphics().setDepth(2);
+    this.drawRgbStrip(W, H);
 
     EventBus.on("workout:complete", this.onWorkoutComplete);
     EventBus.on("scene:switch", this.onSceneSwitch);
@@ -206,6 +223,19 @@ export class HomeScene extends Phaser.Scene {
     g.lineStyle(2, 0xf59e0b, 0.18).strokeRect(16, 50, W - 32, H - 110);
   }
 
+  // Redraws the hue-cycling RGB strip along the floor baseboard
+  private drawRgbStrip(W: number, H: number) {
+    const color = Phaser.Display.Color.HSVToRGB(this.rgbHue, 0.9, 1).color;
+    const y = H - 62;
+
+    this.rgbStrip.clear();
+    // Soft bloom behind the strip
+    this.rgbStrip.fillStyle(color, 0.15).fillRect(16, y - 4, W - 32, 12);
+    // Crisp LED line
+    this.rgbStrip.fillStyle(color, 0.9).fillRect(16, y, W - 32, 2);
+    this.rgbStrip.fillStyle(0xffffff, 0.4).fillRect(16, y, W - 32, 1);
+  }
+
   private tryInteract(worldX: number, worldY: number) {
     void worldX; void worldY;
     for (const eq of this.equipment) {
@@ -251,6 +281,10 @@ export class HomeScene extends Phaser.Scene {
       if (a > 0.1 || a < 0.04) this.windowLightDir *= -1;
       this.windowGlow.setAlpha(a);
     }
+
+    // RGB strip hue cycle
+    this.rgbHue = (this.rgbHue + delta * 0.00006) % 1;
+    this.drawRgbStrip(this.scale.width, this.scale.height);
   }
 
   shutdown() {

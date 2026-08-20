@@ -117,10 +117,10 @@ export class Equipment extends Phaser.GameObjects.Container {
       yoyo: true, repeat: -1, ease: "Sine.easeInOut",
     });
 
-    // Gentle glow pulse (always running at low alpha)
+    // Gentle glow pulse (always running — punchier neon-arcade presence)
     config.scene.tweens.add({
       targets: this.glowPulse,
-      fillAlpha: 0.06, scaleX: 1.1, scaleY: 1.1,
+      fillAlpha: 0.16, scaleX: 1.15, scaleY: 1.15,
       duration: 2200 + Math.random() * 800,
       yoyo: true, repeat: -1, ease: "Sine.easeInOut",
     });
@@ -185,14 +185,14 @@ export class Equipment extends Phaser.GameObjects.Container {
     });
     this.scene.tweens.add({
       targets: this.glowRing,
-      fillAlpha: visible ? 0.22 : 0,
+      fillAlpha: visible ? 0.35 : 0,
       duration: 250,
     });
     // Proximity halo pulse
     if (visible) {
       this.scene.tweens.add({
         targets: this.glowPulse,
-        fillAlpha: 0.18, scaleX: 1.25, scaleY: 1.25,
+        fillAlpha: 0.3, scaleX: 1.3, scaleY: 1.3,
         duration: 400, yoyo: true, repeat: 2,
       });
     }
@@ -232,7 +232,7 @@ export class Equipment extends Phaser.GameObjects.Container {
     // Glow intensifies
     this.scene.tweens.add({
       targets: this.glowRing,
-      fillAlpha: 0.3, duration: 300,
+      fillAlpha: 0.45, duration: 300,
     });
   }
 

@@ -109,6 +109,15 @@ export class GymScene extends Phaser.Scene {
     const W = this.scale.width;
     const H = this.scale.height;
 
+    // create() re-runs every time this scene is (re)started, but these arrays
+    // are plain instance fields — Phaser only calls the class constructor once,
+    // so without resetting them here they keep every equipment/light reference
+    // from every previous session, including ones Phaser has since destroyed
+    // (accessing a destroyed GameObject's `.scene` throws).
+    this.equipment = [];
+    this.ambientLights = [];
+    this.activeEquipment = null;
+
     // ── Parallax background (city through windows) ───────────────────────────
     this.drawParallaxBackground(W, H);
 
@@ -377,15 +386,15 @@ export class GymScene extends Phaser.Scene {
       g.fillStyle(towelColors[i], 0.7).fillRoundedRect(W * 0.5 - 18 + i * 14, 24, 10, 5, 2);
     }
 
-    // ── Ambient overhead light cones ──────────────────────────────────────
+    // ── Ambient overhead light cones — mixed neon-arcade palette ───────────
     const lightPositions = [
-      { x: 140, y: 20, color: 0x6c47ff },  // weight zone
-      { x: 280, y: 20, color: 0x6c47ff },
+      { x: 140, y: 20, color: 0x6c47ff },  // weight zone — purple
+      { x: 280, y: 20, color: 0xf72585 },  // weight zone — hot pink accent
       { x: 420, y: 20, color: 0x6c47ff },
-      { x: 140, y: H * 0.3, color: 0x00d4aa },  // cardio zone
-      { x: 280, y: H * 0.3, color: 0x00d4aa },
+      { x: 140, y: H * 0.3, color: 0x00d4aa },  // cardio zone — teal
+      { x: 280, y: H * 0.3, color: 0x4cc9f0 },  // cardio zone — electric cyan
     ];
-    const lightG = this.add.graphics().setDepth(1).setAlpha(0.06);
+    const lightG = this.add.graphics().setDepth(1).setAlpha(0.09);
     lightPositions.forEach((lp) => {
       lightG.fillStyle(lp.color, 1);
       // Light cone triangle
@@ -395,17 +404,17 @@ export class GymScene extends Phaser.Scene {
         lp.x + 60, lp.y + H * 0.25
       );
       // Store arc for pulse animation
-      const arc = this.add.arc(lp.x, lp.y + 2, 6, 0, 360, false, lp.color, 0.6).setDepth(2);
+      const arc = this.add.arc(lp.x, lp.y + 2, 6, 0, 360, false, lp.color, 0.75).setDepth(2);
       this.ambientLights.push(arc);
     });
 
     // ── Animated floor glow strips ────────────────────────────────────────
-    const stripG = this.add.graphics().setDepth(0).setAlpha(0.12);
+    const stripG = this.add.graphics().setDepth(0).setAlpha(0.16);
     // Weight zone accent strip
     stripG.fillStyle(0x6c47ff, 1).fillRect(20, H * 0.28, W - 40, 2);
     stripG.fillStyle(0x00d4aa, 1).fillRect(20, H * 0.57, W - 40, 2);
     this.tweens.add({
-      targets: stripG, alpha: 0.22,
+      targets: stripG, alpha: 0.3,
       duration: 2000, yoyo: true, repeat: -1, ease: "Sine.easeInOut",
     });
   }
@@ -535,8 +544,10 @@ export class GymScene extends Phaser.Scene {
     // Depth sort
     this.player.updateDepth();
 
-    // Cash glow when income pending
-    if (this.incomeSystem.getPending() > 0) {
+    // Cash glow when income pending — only queue a fresh pulse once the last
+    // one has finished, or this stacks a brand-new tween on cashGlow every
+    // single frame for as long as income is pending (severe perf/jank bug).
+    if (this.incomeSystem.getPending() > 0 && !this.tweens.isTweening(this.cashGlow)) {
       this.tweens.add({
         targets: this.cashGlow,
         fillAlpha: 0.45,
