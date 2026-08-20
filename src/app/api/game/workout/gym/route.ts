@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/db/prisma";
-import { applyXpReward, addTotalXp } from "@/lib/game/engine";
+import { applyXpReward, addTotalXp, trainerPayMicroForTier, MICRO_PER_GYMFIT } from "@/lib/game/engine";
 
 const REST_DURATION_MS = 30 * 60 * 1000;
 
@@ -10,6 +10,7 @@ export async function POST(req: NextRequest) {
   const session = await auth();
   if (!session?.user?.id)
     return Response.json({ error: "Unauthorized" }, { status: 401 });
+  const userId = session.user.id;
 
   const body = await req.json().catch(() => ({}));
   const {
@@ -27,7 +28,7 @@ export async function POST(req: NextRequest) {
   };
 
   const user = await prisma.user.findUnique({
-    where: { id: session.user.id },
+    where: { id: userId },
     select: {
       currentXp: true,
       overflowXp: true,
@@ -66,7 +67,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Add XP reward — overflow if bar is full, capped at 10 000 total
+  // Add XP reward — overflow if bar is full, capped at MAX_XP_ACCUMULATION total
   const xpReward = applyXpReward(newCurrent, newOverflow, xpEarned);
   newCurrent = xpReward.currentXp;
   newOverflow = xpReward.overflowXp;
@@ -79,13 +80,27 @@ export async function POST(req: NextRequest) {
   const tokenBigInt = BigInt(Math.max(0, Math.floor(tokensEarned)));
   const totalXpUpdate = addTotalXp(user.totalXp, actualXpEarned);
 
-  const character = await prisma.character.findFirst({
-    where: { userId: session.user.id, isActive: true },
-  });
+  const [character, gymMembership] = await Promise.all([
+    prisma.character.findFirst({ where: { userId, isActive: true } }),
+    prisma.gymMember.findFirst({
+      where: { userId },
+      orderBy: { joinedAt: "desc" },
+      select: { gym: { select: { id: true, tier: true } } },
+    }),
+  ]);
 
-  const [updatedUser, workout] = await prisma.$transaction([
-    prisma.user.update({
-      where: { id: session.user.id },
+  // Trainers at the player's gym earn a tier-scaled GYMFIT cut per player workout
+  const trainers = gymMembership
+    ? await prisma.gymMember.findMany({
+        where: { gymId: gymMembership.gym.id, role: "TRAINER" },
+        select: { userId: true },
+      })
+    : [];
+  const payMicro = gymMembership ? trainerPayMicroForTier(gymMembership.gym.tier) : 0n;
+
+  const [updatedUser, workout] = await prisma.$transaction(async (tx) => {
+    const updatedUser = await tx.user.update({
+      where: { id: userId },
       data: {
         currentXp:      newCurrent,
         overflowXp:     newOverflow,
@@ -100,10 +115,11 @@ export async function POST(req: NextRequest) {
         offChainTokens: true,
         restUntil: true,
       },
-    }),
-    prisma.workout.create({
+    });
+
+    const workout = await tx.workout.create({
       data: {
-        userId:       session.user.id,
+        userId,
         characterId:  character?.id,
         source:       "IN_GAME",
         durationMins: intensity === "HIGH" ? 45 : intensity === "LOW" ? 20 : 30,
@@ -113,8 +129,41 @@ export async function POST(req: NextRequest) {
         tokensEarned: tokenBigInt,
         fitnessBoost: 0.03,
       },
-    }),
-  ]);
+    });
+
+    if (payMicro > 0n) {
+      for (const trainer of trainers) {
+        const t = await tx.user.findUnique({
+          where: { id: trainer.userId },
+          select: { trainerEarningsMicro: true, offChainTokens: true },
+        });
+        if (!t) continue;
+        const newMicro = t.trainerEarningsMicro + payMicro;
+        const wholeGymfit = newMicro / MICRO_PER_GYMFIT;
+        await tx.user.update({
+          where: { id: trainer.userId },
+          data: {
+            trainerEarningsMicro: newMicro % MICRO_PER_GYMFIT,
+            offChainTokens: t.offChainTokens + wholeGymfit,
+          },
+        });
+        if (wholeGymfit > 0n) {
+          await tx.transaction.create({
+            data: {
+              userId: trainer.userId,
+              type: "EARN",
+              amount: wholeGymfit,
+              balanceBefore: t.offChainTokens,
+              balanceAfter: t.offChainTokens + wholeGymfit,
+              description: "Trainer pay",
+            },
+          });
+        }
+      }
+    }
+
+    return [updatedUser, workout] as const;
+  });
 
   return Response.json({
     success:     true,

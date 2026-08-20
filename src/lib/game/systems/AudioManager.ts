@@ -144,6 +144,11 @@ const SFX = {
     playTone(600, "sine", 0.04, 0.1);
   },
 
+  workoutQuit() {
+    playTone(330, "sine", 0.1, 0.15);
+    setTimeout(() => playTone(220, "sine", 0.12, 0.12), 70);
+  },
+
   error() {
     playTone(200, "sawtooth", 0.2, 0.15);
     setTimeout(() => playTone(150, "sawtooth", 0.25, 0.12), 100);
@@ -171,6 +176,7 @@ export class AudioManager {
     // Bind EventBus events to SFX
     EventBus.on("workout:started", () => SFX.equipmentActivate());
     EventBus.on("workout:complete", () => SFX.workoutComplete());
+    EventBus.on("workout:quit", () => SFX.workoutQuit());
     EventBus.on("income:collected", () => SFX.coinCollect());
     EventBus.on("npc:entered", () => SFX.npcEnter());
     EventBus.on("npc:paid", () => SFX.npcPaid());

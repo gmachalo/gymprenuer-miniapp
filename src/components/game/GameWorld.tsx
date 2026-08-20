@@ -69,6 +69,7 @@ export function GameWorld({
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ xpEarned: number; tokensEarned: string } | null>(null);
   const [showRest, setShowRest] = useState(restUntil ? new Date(restUntil) > new Date() : false);
+  const [error, setError] = useState<string | null>(null);
 
   const spots = isHome ? HOME_SPOTS : GYM_SPOTS;
   const isResting = restUntil ? new Date(restUntil) > new Date() : false;
@@ -77,6 +78,7 @@ export function GameWorld({
   const handleSpotClick = (spot: WorkoutSpotDef) => {
     if (isResting) { setShowRest(true); return; }
     setResult(null);
+    setError(null);
     setActiveSpot(spot);
   };
 
@@ -85,6 +87,7 @@ export function GameWorld({
     setLoading(true);
     setIsWorking(true);
     setWorkoutView("world");
+    setError(null);
     try {
       const endpoint = isHome ? "/api/game/workout/home" : "/api/game/workout/gym";
       const res = await fetch(endpoint, {
@@ -93,12 +96,13 @@ export function GameWorld({
         body: JSON.stringify({ intensity: activeSpot.intensity }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
+      if (!res.ok) throw new Error(data.error ?? "Workout failed");
       setResult({ xpEarned: data.xpEarned, tokensEarned: data.tokensEarned });
       onXpChange(data.currentXp, data.overflowXp, data.restUntil);
       if (data.restUntil) setShowRest(true);
     } catch (e) {
       console.error("[GameWorld] workout error:", e);
+      setError(e instanceof Error ? e.message : "Workout failed");
     } finally {
       setLoading(false);
       setTimeout(() => { setIsWorking(false); setActiveSpot(null); }, 2500);
@@ -247,6 +251,18 @@ export function GameWorld({
             }}>
               <div style={{ fontSize: "22px", fontWeight: 900, color: "#a78bfa" }}>+{result.xpEarned} XP</div>
               <div style={{ fontSize: "16px", fontWeight: 700, color: "#00d4aa" }}>+{result.tokensEarned} 🪙</div>
+            </div>
+          )}
+
+          {/* Workout error */}
+          {error && (
+            <div style={{
+              position: "absolute", top: "40%", left: "50%", transform: "translate(-50%,-50%)",
+              textAlign: "center", animation: "reward-float 2.5s ease-out forwards", zIndex: 20,
+              pointerEvents: "none", background: "rgba(239,68,68,0.15)", border: "1px solid rgba(239,68,68,0.4)",
+              borderRadius: "10px", padding: "8px 14px",
+            }}>
+              <div style={{ fontSize: "13px", fontWeight: 700, color: "#f87171" }}>⚠️ {error}</div>
             </div>
           )}
         </div>

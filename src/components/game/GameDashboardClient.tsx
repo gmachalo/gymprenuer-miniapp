@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import { GameWorld } from "@/components/game/GameWorld";
 import { XpBar } from "@/components/xp/XpBar";
 import { useXpRegen } from "@/hooks/useXpRegen";
@@ -34,6 +35,7 @@ export function GameDashboardClient({
   const [restUntil, setRestUntil] = useState<string | null>(initialRestUntil);
   const [lastRegenAt, setLastRegenAt] = useState(initialLastRegenAt);
   const [worldMode, setWorldMode] = useState<"home" | "gym">(hasGym ? "gym" : "home");
+  const router = useRouter();
 
   const handleRegenSync = useCallback(
     (data: { currentXp: number; overflowXp: number; restUntil: string | null }) => {
@@ -50,8 +52,12 @@ export function GameDashboardClient({
       setCurrentXp(xp);
       setOverflowXp(overflow);
       setRestUntil(rest);
+      // The dashboard's totalXp/level/recent-workouts are server-rendered —
+      // refresh so they pick up the workout that just completed instead of
+      // only updating this component's local XP bar.
+      router.refresh();
     },
-    []
+    [router]
   );
 
   useXpRegen(handleRegenSync);

@@ -63,8 +63,9 @@ model User {
   offChainTokens  BigInt    @default(0)
   onChainSynced   Boolean   @default(false)
   onboardingDone  Boolean   @default(false)
-  currentXp       Int       @default(100)  // 0–100 visible bar
-  overflowXp      Int       @default(0)    // XP above 100, spendable
+  currentXp       Int       @default(20)   // 0–100 visible bar
+  overflowXp      Int       @default(0)    // XP above 100, spendable (pool capped at MAX_XP_ACCUMULATION)
+  trainerEarningsMicro BigInt @default(0)  // pending trainer GYMFIT pay, in micro-units (100 000 micro = 1 GYMFIT)
   lastXpRegenAt   DateTime  @default(now())
   restUntil       DateTime?               // null = not resting
   createdAt       DateTime  @default(now())

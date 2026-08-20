@@ -270,7 +270,7 @@ export class Equipment extends Phaser.GameObjects.Container {
     }
   }
 
-  private finishWorkout() {
+  private resetAfterWorkout() {
     this.isOccupied = false;
     this.workoutTimer = 0;
     this.progressPct = 0;
@@ -291,6 +291,10 @@ export class Equipment extends Phaser.GameObjects.Container {
       targets: this.glowRing,
       fillAlpha: 0, duration: 400,
     });
+  }
+
+  private finishWorkout() {
+    this.resetAfterWorkout();
 
     // Completion flash — brief white tint
     this.sprite.setTint(0xffffff);
@@ -303,6 +307,20 @@ export class Equipment extends Phaser.GameObjects.Container {
       xpEarned:     this.xpReward,
       tokensEarned: this.tokenReward,
     });
+  }
+
+  /** Cancel an in-progress workout early — no reward is granted or requested. */
+  quitWorkout() {
+    if (!this.isOccupied) return;
+    this.resetAfterWorkout();
+
+    // Fade flash (distinct from the completion tint) to signal a cancel, not a win
+    this.sprite.setTint(0x888888);
+    this.scene.time.delayedCall(150, () => {
+      if (this.sprite?.active) this.sprite.clearTint();
+    });
+
+    EventBus.emit("workout:quit", { equipmentId: this.equipId });
   }
 
   upgrade() {

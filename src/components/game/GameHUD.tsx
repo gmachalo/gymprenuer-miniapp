@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { EventBus } from "@/lib/game/EventBus";
 import { XpBar } from "@/components/xp/XpBar";
 import { AudioManager } from "@/lib/game/systems/AudioManager";
+import { xpRequiredForLevel } from "@/lib/game/engine";
 
 interface GameHUDProps {
   playerName: string;
@@ -12,6 +13,7 @@ interface GameHUDProps {
   initialRestUntil: string | null;
   initialLastRegenAt: string;
   initialTokens: number;
+  initialLevel: number;
   streakCount: number;
   gymName?: string;
   hasGym: boolean;
@@ -53,6 +55,7 @@ export function GameHUD({
   initialRestUntil,
   initialLastRegenAt,
   initialTokens,
+  initialLevel,
   streakCount,
   gymName,
   hasGym,
@@ -62,14 +65,41 @@ export function GameHUD({
   const [restUntil, setRestUntil]       = useState<string | null>(initialRestUntil);
   const [lastRegenAt, setLastRegenAt]   = useState(initialLastRegenAt);
   const [tokens, setTokens]             = useState(initialTokens);
+  const [level, setLevel]               = useState(initialLevel);
+  const [levelingUp, setLevelingUp]     = useState(false);
   const [activeScene, setActiveScene]   = useState<ActiveScene>(hasGym ? "GymScene" : "HomeScene");
   const [isFirstPerson, setIsFirstPerson] = useState(false);
   const [workoutReward, setWorkoutReward] = useState<{ xp: number; tokens: number } | null>(null);
   const [npcCount, setNpcCount]          = useState(0);
   const [pendingIncome, setPendingIncome] = useState(0);
+  const [workoutActive, setWorkoutActive] = useState(false);
 
   const displayTokens = useAnimatedNumber(tokens);
   const displayPending = useAnimatedNumber(pendingIncome);
+  const levelUpCost = xpRequiredForLevel(level);
+  const canLevelUp = currentXp + overflowXp >= levelUpCost;
+
+  const handleLevelUp = useCallback(async () => {
+    if (levelingUp) return;
+    setLevelingUp(true);
+    try {
+      const res = await fetch("/api/game/level-up", { method: "POST" });
+      const data = await res.json();
+      if (res.ok) {
+        setLevel(data.level);
+        setCurrentXp(data.currentXp);
+        setOverflowXp(data.overflowXp);
+        EventBus.emit("player:level_up", { newLevel: data.level });
+        AudioManager.playUIClick();
+      }
+    } catch { /* silent */ } finally {
+      setLevelingUp(false);
+    }
+  }, [levelingUp]);
+
+  const handleQuitWorkout = useCallback(() => {
+    EventBus.emit("hud:quit_workout");
+  }, []);
 
   // Init audio on mount
   useEffect(() => { AudioManager.init(); }, []);
@@ -82,7 +112,10 @@ export function GameHUD({
       setRestUntil(d.restUntil);
       setLastRegenAt(new Date().toISOString());
     };
+    const onWorkoutStarted = () => setWorkoutActive(true);
+    const onWorkoutQuit = () => setWorkoutActive(false);
     const onWorkoutComplete = async (d: { xpEarned: number; tokensEarned: number; equipmentId?: string; intensity?: string }) => {
+      setWorkoutActive(false);
       setWorkoutReward({ xp: d.xpEarned, tokens: d.tokensEarned });
       setTokens((t) => t + d.tokensEarned);
       setTimeout(() => setWorkoutReward(null), 3500);
@@ -127,7 +160,9 @@ export function GameHUD({
     const onFirstPerson = (d: { enabled: boolean }) => setIsFirstPerson(d.enabled);
 
     EventBus.on("player:xp_changed", onXpChanged);
+    EventBus.on("workout:started", onWorkoutStarted);
     EventBus.on("workout:complete", onWorkoutComplete);
+    EventBus.on("workout:quit", onWorkoutQuit);
     EventBus.on("income:collected", onIncomeCollected);
     EventBus.on("npc:paid", onNpcPaid);
     EventBus.on("npc:entered", onNpcEntered);
@@ -136,7 +171,9 @@ export function GameHUD({
 
     return () => {
       EventBus.off("player:xp_changed", onXpChanged);
+      EventBus.off("workout:started", onWorkoutStarted);
       EventBus.off("workout:complete", onWorkoutComplete);
+      EventBus.off("workout:quit", onWorkoutQuit);
       EventBus.off("income:collected", onIncomeCollected);
       EventBus.off("npc:paid", onNpcPaid);
       EventBus.off("npc:entered", onNpcEntered);
@@ -185,7 +222,7 @@ export function GameHUD({
             <div style={styles.avatar}>🏋️</div>
           </div>
           <div>
-            <div style={styles.playerName}>{playerName}</div>
+            <div style={styles.playerName}>{playerName} · Lv.{level}</div>
             <div style={styles.streakBadge}>🔥 {streakCount} day streak</div>
           </div>
           <div style={styles.badgeRow}>
@@ -205,7 +242,27 @@ export function GameHUD({
         <div style={{ pointerEvents: "auto", marginTop: "6px" }}>
           <XpBar currentXp={currentXp} overflowXp={overflowXp} restUntil={restUntil} lastXpRegenAt={lastRegenAt} />
         </div>
+
+        {/* Level up */}
+        {canLevelUp && (
+          <button
+            onClick={handleLevelUp}
+            disabled={levelingUp}
+            style={styles.levelUpBtn}
+          >
+            {levelingUp ? "Leveling..." : `⬆️ Level Up to ${level + 1} (${levelUpCost} XP)`}
+          </button>
+        )}
       </div>
+
+      {/* ── Quit workout ── */}
+      {workoutActive && (
+        <div style={styles.quitWorkoutWrap}>
+          <button onClick={handleQuitWorkout} style={styles.quitWorkoutBtn}>
+            ✕ Quit Workout
+          </button>
+        </div>
+      )}
 
       {/* ── Scene switcher ── */}
       <div style={styles.sceneSwitcher}>
@@ -355,6 +412,40 @@ const styles: Record<string, React.CSSProperties> = {
     border: "1px solid rgba(255,215,0,0.2)",
     fontWeight: 700,
     letterSpacing: "0.3px",
+  },
+  levelUpBtn: {
+    marginTop: "8px",
+    width: "100%",
+    padding: "8px 12px",
+    borderRadius: "10px",
+    border: "1px solid rgba(255,215,0,0.4)",
+    background: "linear-gradient(135deg, rgba(255,215,0,0.25), rgba(255,107,53,0.15))",
+    color: "#ffd700",
+    fontSize: "12px",
+    fontWeight: 700,
+    cursor: "pointer",
+    pointerEvents: "auto" as const,
+    animation: "pulse-badge 1.4s ease-in-out infinite",
+  },
+  quitWorkoutWrap: {
+    position: "fixed" as const,
+    bottom: 168,
+    left: "50%",
+    transform: "translateX(-50%)",
+    zIndex: 50,
+    pointerEvents: "auto" as const,
+  },
+  quitWorkoutBtn: {
+    padding: "7px 16px",
+    borderRadius: "10px",
+    border: "1px solid rgba(239,68,68,0.4)",
+    background: "rgba(9,9,15,0.92)",
+    color: "#f87171",
+    fontSize: "12px",
+    fontWeight: 700,
+    cursor: "pointer",
+    backdropFilter: "blur(12px)",
+    boxShadow: "0 4px 16px rgba(0,0,0,0.35)",
   },
   sceneSwitcher: {
     position: "fixed",

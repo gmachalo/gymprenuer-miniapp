@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/db/prisma";
+import { GYM_TIERS } from "@/app/api/game/gyms/[id]/upgrade/route";
 
 // GET /api/game/gyms — list all gyms
 export async function GET(req: NextRequest) {
@@ -40,18 +41,34 @@ export async function POST(req: NextRequest) {
   if (!name || name.trim().length < 3)
     return Response.json({ error: "Gym name must be at least 3 characters" }, { status: 400 });
 
-  // Check user has enough tokens (gym creation costs 500 GYMFIT)
-  const GYM_CREATION_COST = BigInt(500);
+  // New gyms start at tier 1 — creation costs that tier's buy-XP (a token sink,
+  // matching the XP-only join model tier 1–3 gyms already use).
+  const GYM_CREATION_COST_XP = GYM_TIERS[0].buyXp;
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) return Response.json({ error: "User not found" }, { status: 404 });
 
-  if (user.offChainTokens < GYM_CREATION_COST)
-    return Response.json({ error: "Insufficient tokens. Need 500 GYMFIT to create a gym." }, { status: 402 });
+  const totalXp = user.currentXp + user.overflowXp;
+  if (totalXp < GYM_CREATION_COST_XP)
+    return Response.json(
+      { error: `Need ${GYM_CREATION_COST_XP} XP to create a gym. You have ${totalXp}.` },
+      { status: 402 }
+    );
 
   // Check they don't already own a gym
   const existing = await prisma.gym.findFirst({ where: { ownerId: userId } });
   if (existing)
     return Response.json({ error: "You already own a gym" }, { status: 409 });
+
+  // Spend XP — overflow first, then current
+  let newOverflow = user.overflowXp;
+  let newCurrent = user.currentXp;
+  if (newOverflow >= GYM_CREATION_COST_XP) {
+    newOverflow -= GYM_CREATION_COST_XP;
+  } else {
+    const remainder = GYM_CREATION_COST_XP - newOverflow;
+    newOverflow = 0;
+    newCurrent = Math.max(0, newCurrent - remainder);
+  }
 
   const gym = await prisma.$transaction(async (tx) => {
     const g = await tx.gym.create({
@@ -69,22 +86,10 @@ export async function POST(req: NextRequest) {
       data: { gymId: g.id, userId, role: "CO_OWNER" },
     });
 
-    // Deduct tokens (sink!)
+    // Deduct XP (sink!)
     await tx.user.update({
       where: { id: userId },
-      data: { offChainTokens: user.offChainTokens - GYM_CREATION_COST },
-    });
-
-    // Log spend transaction
-    await tx.transaction.create({
-      data: {
-        userId,
-        type: "SPEND",
-        amount: GYM_CREATION_COST,
-        balanceBefore: user.offChainTokens,
-        balanceAfter: user.offChainTokens - GYM_CREATION_COST,
-        description: `Created gym: ${g.name}`,
-      },
+      data: { currentXp: newCurrent, overflowXp: newOverflow },
     });
 
     return g;

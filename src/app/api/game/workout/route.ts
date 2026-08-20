@@ -99,7 +99,7 @@ export async function POST(req: NextRequest) {
     dailyWorkoutCount: todayCount,
   });
 
-  // Add XP reward back (overflow if bar is full), capped at 10 000 total
+  // Add XP reward back (overflow if bar is full), capped at MAX_XP_ACCUMULATION total
   const xpReward = applyXpReward(newCurrent, newOverflow, reward.totalXp);
   newCurrent = xpReward.currentXp;
   newOverflow = xpReward.overflowXp;
@@ -152,7 +152,6 @@ export async function POST(req: NextRequest) {
         overflowXp: newOverflow,
         totalXp: newTotalXp,
         offChainTokens: user.offChainTokens + reward.totalTokens,
-        level: Math.max(user.level, Math.floor(Math.log2(Number(newTotalXp) / 50 + 1)) + 1),
         lastXpRegenAt: new Date(),
         ...(restUntil ? { restUntil } : {}),
       },

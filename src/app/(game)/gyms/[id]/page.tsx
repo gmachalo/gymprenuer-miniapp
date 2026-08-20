@@ -1,9 +1,11 @@
 import { auth } from "@/auth";
 import { prisma } from "@/lib/db/prisma";
 import { redirect } from "next/navigation";
-import { calculateGymDailyIncome } from "@/lib/game/engine";
+import { calculateGymDailyIncome, trainerLevelRequirement } from "@/lib/game/engine";
 import { formatTokens } from "@/lib/utils";
 import GymJoinButton from "@/components/gym/GymJoinButton";
+import GymTrainerButton from "@/components/gym/GymTrainerButton";
+import { GYM_TIERS } from "@/app/api/game/gyms/[id]/upgrade/route";
 
 export default async function GymDetailPage(
   props: { params: Promise<{ id: string }> }
@@ -47,8 +49,15 @@ export default async function GymDetailPage(
   const dailyIncome = calculateGymDailyIncome(gym._count.members, avgSat, avgEq, gym.monthlyFee);
   const isMember = !!membership;
   const isOwner = gym.ownerId === userId;
-  const canAfford = (user?.offChainTokens ?? BigInt(0)) >= gym.monthlyFee;
+  const tierData = GYM_TIERS[gym.tier - 1] ?? GYM_TIERS[0];
+  const totalXp = (user?.currentXp ?? 0) + (user?.overflowXp ?? 0);
+  const canAfford =
+    tierData.joinXp > 0
+      ? totalXp >= tierData.joinXp
+      : (user?.offChainTokens ?? BigInt(0)) >= BigInt(tierData.joinGymfit);
   const isFull = gym.memberCount >= gym.maxMembers;
+  const requiredTrainerLevel = trainerLevelRequirement(gym.tier);
+  const isTrainer = membership?.role === "TRAINER";
 
   return (
     <div>
@@ -110,7 +119,8 @@ export default async function GymDetailPage(
             <GymJoinButton
               gymId={gymId}
               gymName={gym.name}
-              monthlyFee={gym.monthlyFee.toString()}
+              joinCost={tierData.joinXp > 0 ? tierData.joinXp : tierData.joinGymfit}
+              joinCostLabel={tierData.joinXp > 0 ? "XP" : "GYMFIT"}
               isMember={isMember}
               canAfford={canAfford}
               isFull={isFull}
@@ -120,6 +130,23 @@ export default async function GymDetailPage(
         {isOwner && (
           <div className="badge badge-purple" style={{ marginBottom: "20px", display: "inline-flex" }}>
             👑 You own this gym
+          </div>
+        )}
+
+        {/* Trainer application */}
+        {isMember && !isOwner && (
+          <div style={{ marginBottom: "20px" }}>
+            {isTrainer ? (
+              <div className="badge badge-teal" style={{ display: "inline-flex" }}>
+                🎓 You train here
+              </div>
+            ) : (
+              <GymTrainerButton
+                gymId={gymId}
+                requiredLevel={requiredTrainerLevel}
+                playerLevel={user?.level ?? 1}
+              />
+            )}
           </div>
         )}
 
@@ -165,7 +192,10 @@ export default async function GymDetailPage(
                     ) : "👤"}
                   </div>
                   <div style={{ flex: 1 }}>
-                    <p style={{ margin: 0, fontWeight: 600, fontSize: "14px" }}>{m.user.name ?? "Trainer"}</p>
+                    <p style={{ margin: 0, fontWeight: 600, fontSize: "14px" }}>{m.user.name ?? "Member"}</p>
+                    {m.role === "TRAINER" && (
+                      <p style={{ margin: 0, fontSize: "11px", color: "#00d4aa" }}>🎓 Trainer</p>
+                    )}
                   </div>
                   <span className="badge badge-purple">Lvl {m.user.level}</span>
                 </div>

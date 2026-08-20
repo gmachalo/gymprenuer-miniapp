@@ -64,7 +64,7 @@ export async function POST(req: NextRequest) {
     newCurrent = Math.max(0, newCurrent - remainder);
   }
 
-  // Add XP reward (overflow if current >= 100), capped at 10 000 total
+  // Add XP reward (overflow if current >= 100), capped at MAX_XP_ACCUMULATION total
   const xpUpdate = applyXpReward(newCurrent, newOverflow, xpRewardAmount);
   newCurrent = xpUpdate.currentXp;
   newOverflow = xpUpdate.overflowXp;

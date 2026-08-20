@@ -40,6 +40,7 @@ export default async function PlayPage() {
       restUntil={user.restUntil?.toISOString() ?? null}
       lastXpRegenAt={user.lastXpRegenAt.toISOString()}
       offChainTokens={Number(user.offChainTokens)}
+      level={user.level}
       streakCount={streak?.currentStreak ?? 0}
       gymName={gymMembership?.gym.name}
       hasGym={!!gymMembership}

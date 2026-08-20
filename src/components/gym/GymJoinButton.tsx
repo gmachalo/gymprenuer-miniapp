@@ -6,13 +6,14 @@ import { useRouter } from "next/navigation";
 interface Props {
   gymId: string;
   gymName: string;
-  monthlyFee: string;
+  joinCost: number;
+  joinCostLabel: "XP" | "GYMFIT";
   isMember: boolean;
   canAfford: boolean;
   isFull: boolean;
 }
 
-export default function GymJoinButton({ gymId, gymName, monthlyFee, isMember, canAfford, isFull }: Props) {
+export default function GymJoinButton({ gymId, gymName, joinCost, joinCostLabel, isMember, canAfford, isFull }: Props) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [joined, setJoined] = useState(isMember);
@@ -54,8 +55,8 @@ export default function GymJoinButton({ gymId, gymName, monthlyFee, isMember, ca
         : isFull
         ? "Gym is Full"
         : !canAfford
-        ? `Need ${monthlyFee} GYMFIT to join`
-        : `Join for ${monthlyFee} GYMFIT`}
+        ? `Need ${joinCost.toLocaleString()} ${joinCostLabel} to join`
+        : `Join for ${joinCost.toLocaleString()} ${joinCostLabel}`}
     </button>
   );
 }

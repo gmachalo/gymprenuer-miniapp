@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/db/prisma";
+import { GYM_TIERS } from "../upgrade/route";
 
 // POST /api/game/gyms/[id]/join
 export async function POST(
@@ -29,10 +30,29 @@ export async function POST(
   if (gym.memberCount >= gym.maxMembers)
     return Response.json({ error: "Gym is full" }, { status: 400 });
 
-  // Monthly fee deducted on join (token sink)
-  const fee = gym.monthlyFee;
-  if (user.offChainTokens < fee)
-    return Response.json({ error: `Need ${fee} GYMFIT to join` }, { status: 402 });
+  // Join cost is tier-based: low tiers (1–3) cost XP only, high tiers (4–5) cost GYMFIT only
+  const tierData = GYM_TIERS[gym.tier - 1] ?? GYM_TIERS[0];
+  const joinCostXp = tierData.joinXp;
+  const joinCostGymfit = BigInt(tierData.joinGymfit);
+  const totalXp = user.currentXp + user.overflowXp;
+
+  if (joinCostXp > 0 && totalXp < joinCostXp)
+    return Response.json({ error: `Need ${joinCostXp} XP to join. You have ${totalXp}.` }, { status: 402 });
+  if (joinCostGymfit > 0n && user.offChainTokens < joinCostGymfit)
+    return Response.json({ error: `Need ${joinCostGymfit} GYMFIT to join` }, { status: 402 });
+
+  // Deduct XP — overflow first, then current
+  let newOverflow = user.overflowXp;
+  let newCurrent = user.currentXp;
+  if (joinCostXp > 0) {
+    if (newOverflow >= joinCostXp) {
+      newOverflow -= joinCostXp;
+    } else {
+      const remainder = joinCostXp - newOverflow;
+      newOverflow = 0;
+      newCurrent = Math.max(0, newCurrent - remainder);
+    }
+  }
 
   await prisma.$transaction(async (tx) => {
     await tx.gymMember.create({ data: { gymId, userId, role: "MEMBER" } });
@@ -42,18 +62,24 @@ export async function POST(
     });
     await tx.user.update({
       where: { id: userId },
-      data: { offChainTokens: { decrement: fee } },
-    });
-    await tx.transaction.create({
       data: {
-        userId,
-        type: "GYM_FEE",
-        amount: fee,
-        balanceBefore: user.offChainTokens,
-        balanceAfter: user.offChainTokens - fee,
-        description: `Joined gym: ${gym.name}`,
+        currentXp: newCurrent,
+        overflowXp: newOverflow,
+        offChainTokens: { decrement: joinCostGymfit },
       },
     });
+    if (joinCostGymfit > 0n) {
+      await tx.transaction.create({
+        data: {
+          userId,
+          type: "GYM_FEE",
+          amount: joinCostGymfit,
+          balanceBefore: user.offChainTokens,
+          balanceAfter: user.offChainTokens - joinCostGymfit,
+          description: `Joined gym: ${gym.name}`,
+        },
+      });
+    }
   });
 
   return Response.json({ success: true, gym });

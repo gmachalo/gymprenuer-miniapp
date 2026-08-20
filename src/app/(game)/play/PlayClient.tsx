@@ -18,6 +18,7 @@ interface PlayClientProps {
   restUntil: string | null;
   lastXpRegenAt: string;
   offChainTokens: number;
+  level: number;
   streakCount: number;
   gymName?: string;
   hasGym: boolean;
@@ -31,6 +32,7 @@ export function PlayClient({
   restUntil,
   lastXpRegenAt,
   offChainTokens,
+  level,
   streakCount,
   gymName,
   hasGym,
@@ -48,6 +50,7 @@ export function PlayClient({
         initialRestUntil={restUntil}
         initialLastRegenAt={lastXpRegenAt}
         initialTokens={offChainTokens}
+        initialLevel={level}
         streakCount={streakCount}
         gymName={gymName}
         hasGym={hasGym}

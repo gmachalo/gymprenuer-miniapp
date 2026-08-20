@@ -41,6 +41,12 @@ export function PhaserGame({ initData, onReady }: PhaserGameProps) {
         backgroundColor: "#0d1117",
         parent: container,
         scene: [BootScene, GymScene, HomeScene, WorkoutScene],
+        // The game uses its own Web Audio-based AudioManager for all SFX —
+        // Phaser's built-in sound manager is unused but, left enabled, still
+        // creates its own AudioContext and binds visibilitychange handlers
+        // that throw "Cannot suspend/resume a closed AudioContext" once the
+        // game is destroyed (scene switch, unmount, Fast Refresh).
+        audio: { noAudio: true },
         physics: { default: "arcade", arcade: { debug: false } },
         scale: {
           mode: Phaser.Scale.FIT,

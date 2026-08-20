@@ -23,12 +23,42 @@ export class HomeScene extends Phaser.Scene {
   private equipment: Equipment[] = [];
   private incomeSystem!: IncomeSystem;
   private initData: HomeSceneInitData = {};
+  private activeEquipment: Equipment | null = null;
 
   // Ambient
   private windowLightTimer = 0;
   private windowLightDir = 1;
   private windowGlow!: Phaser.GameObjects.Graphics;
   private dustEmitter!: Phaser.GameObjects.Particles.ParticleEmitter;
+
+  // Bound EventBus handler references — kept so shutdown() can remove exactly
+  // these listeners (EventBus.off(type) with no handler clears ALL listeners
+  // for that event, including AudioManager's and GameHUD's, so we must pass
+  // the specific function reference here rather than the bare event name).
+  private onWorkoutComplete = ({ xpEarned, tokensEarned, equipmentId }: { xpEarned: number; tokensEarned: number; equipmentId: string }) => {
+    const eq = this.equipment.find((e) => e.equipId === equipmentId);
+    if (eq) {
+      this.incomeSystem.spawnXpReward(eq.x, eq.y - 40, xpEarned);
+      this.incomeSystem.spawnTokenReward(eq.x + 20, eq.y - 20, tokensEarned);
+      this.cameras.main.shake(100, 0.003);
+    }
+    this.player.setPlayerState("IDLE");
+    this.activeEquipment = null;
+  };
+
+  private onSceneSwitch = ({ to }: { to: "GymScene" | "HomeScene" | "WorkoutScene" }) => {
+    if (to !== "HomeScene") {
+      this.cameras.main.fadeOut(250, 12, 11, 7);
+      this.cameras.main.once("camerafadeoutcomplete", () => this.scene.start(to));
+    }
+  };
+
+  private onQuitWorkout = () => {
+    if (!this.activeEquipment) return;
+    this.activeEquipment.quitWorkout();
+    this.activeEquipment = null;
+    this.player.setPlayerState("IDLE");
+  };
 
   constructor() {
     super({ key: "HomeScene" });
@@ -82,24 +112,16 @@ export class HomeScene extends Phaser.Scene {
     });
     this.dustEmitter.setDepth(5);
 
-    EventBus.on("workout:complete", ({ xpEarned, tokensEarned, equipmentId }) => {
-      const eq = this.equipment.find((e) => e.equipId === equipmentId);
-      if (eq) {
-        this.incomeSystem.spawnXpReward(eq.x, eq.y - 40, xpEarned);
-        this.incomeSystem.spawnTokenReward(eq.x + 20, eq.y - 20, tokensEarned);
-        this.cameras.main.shake(100, 0.003);
-      }
-      this.player.setPlayerState("IDLE");
-    });
-
-    EventBus.on("scene:switch", ({ to }) => {
-      if (to !== "HomeScene") {
-        this.cameras.main.fadeOut(250, 12, 11, 7);
-        this.cameras.main.once("camerafadeoutcomplete", () => this.scene.start(to));
-      }
-    });
+    EventBus.on("workout:complete", this.onWorkoutComplete);
+    EventBus.on("scene:switch", this.onSceneSwitch);
+    EventBus.on("hud:quit_workout", this.onQuitWorkout);
 
     EventBus.emit("scene:ready", { name: "HomeScene" });
+
+    // create() re-runs every time this scene is started, so the EventBus
+    // listeners above must be torn down on shutdown or they pile up and
+    // keep firing against this now-destroyed scene's game objects.
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.shutdown, this);
   }
 
   private drawHomeLayout(W: number, H: number) {
@@ -192,6 +214,7 @@ export class HomeScene extends Phaser.Scene {
         this.player.x = eq.x;
         this.player.y = eq.y + 50;
         this.player.setPlayerState("WORKING_OUT");
+        this.activeEquipment = eq;
         eq.startWorkout(20_000);
         // Zoom pulse on activation
         this.tweens.add({
@@ -208,7 +231,12 @@ export class HomeScene extends Phaser.Scene {
 
   update(_time: number, delta: number) {
     this.controller.update(delta);
-    for (const eq of this.equipment) eq.updateWorkout(delta);
+    // Only tick the player's own active equipment — mirrors GymScene, and keeps
+    // activeEquipment accurate for quitWorkout() to target.
+    if (this.activeEquipment) {
+      const finished = this.activeEquipment.updateWorkout(delta);
+      if (finished) this.activeEquipment = null;
+    }
     for (const eq of this.equipment) {
       const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, eq.x, eq.y);
       eq.showPrompt(dist < 70 && !eq.isOccupied);
@@ -226,8 +254,9 @@ export class HomeScene extends Phaser.Scene {
   }
 
   shutdown() {
-    EventBus.off("workout:complete");
-    EventBus.off("scene:switch");
+    EventBus.off("workout:complete", this.onWorkoutComplete);
+    EventBus.off("scene:switch", this.onSceneSwitch);
+    EventBus.off("hud:quit_workout", this.onQuitWorkout);
     this.controller.destroy();
     this.dustEmitter?.destroy();
   }

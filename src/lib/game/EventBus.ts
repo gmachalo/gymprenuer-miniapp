@@ -26,6 +26,7 @@ export type GameEvents = {
   // Workouts
   "workout:started":           { equipmentId: string; intensity: "LOW" | "MEDIUM" | "HIGH" };
   "workout:complete":          { xpEarned: number; tokensEarned: number; equipmentId: string };
+  "workout:quit":              { equipmentId: string };
   "workout:firstperson_toggle": { enabled: boolean };
 
   // Equipment
@@ -39,6 +40,7 @@ export type GameEvents = {
   // HUD actions (React → Phaser)
   "hud:upgrade_requested": { equipmentId: string };
   "hud:collect_income":    void;
+  "hud:quit_workout":      void;
 };
 
 export const EventBus = mitt<GameEvents>();

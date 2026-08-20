@@ -40,8 +40,41 @@ const INTENSITY_MULTIPLIER: Record<string, number> = {
 const DAILY_TOKEN_CAP = BigInt(200); // max tokens earnable per day
 const DAILY_XP_CAP = 400;
 
-export const MAX_XP_ACCUMULATION = 10000;
+export const MAX_XP_ACCUMULATION = 500;
 export const MAX_XP_BAR = 100;
+
+// ─── Leveling ──────────────────────────────────────────────────────────────
+// Levels are no longer earned automatically — XP accumulates in the spendable
+// pool (currentXp + overflowXp) up to MAX_XP_ACCUMULATION, and the player
+// manually spends XP to level up once they've reached that level's threshold.
+
+export const XP_PER_LEVEL = 50;
+
+/** XP required, from the spendable pool, to advance from `level` to `level + 1`. */
+export function xpRequiredForLevel(level: number): number {
+  return level * XP_PER_LEVEL;
+}
+
+// ─── Gym Trainers ────────────────────────────────────────────────────────────
+// Trainer pay is denominated in micro-GYMFIT (1 GYMFIT = MICRO_PER_GYMFIT
+// micro-units) so tier-1's fractional 0.00001 GYMFIT rate can accumulate
+// exactly as an integer instead of drifting as a float.
+
+export const MICRO_PER_GYMFIT = 100_000n;
+
+// Index 0 = tier 1 ... index 4 = tier 5. 10x scaling per tier, tier 1 = 0.00001 GYMFIT.
+const TRAINER_PAY_MICRO_BY_TIER: bigint[] = [1n, 10n, 100n, 1000n, 10000n];
+
+/** Micro-GYMFIT a trainer earns per player workout completed at a gym of this tier. */
+export function trainerPayMicroForTier(tier: number): bigint {
+  const idx = Math.min(Math.max(tier, 1), TRAINER_PAY_MICRO_BY_TIER.length) - 1;
+  return TRAINER_PAY_MICRO_BY_TIER[idx];
+}
+
+/** Player level required to become a trainer at a gym of this tier. */
+export function trainerLevelRequirement(tier: number): number {
+  return Math.min(Math.max(tier, 1), 5) * 2;
+}
 
 /** Apply XP reward to the spendable pool (currentXp + overflowXp), capped at MAX_XP_ACCUMULATION. */
 export function applyXpReward(
@@ -202,10 +235,10 @@ export function calculateStatGain(
 export function calculateTransformationStage(totalXp: bigint): number {
   const xp = Math.min(Number(totalXp), MAX_XP_ACCUMULATION);
   if (xp >= MAX_XP_ACCUMULATION) return 5;
-  if (xp >= 5000) return 4;
-  if (xp >= 2000) return 3;
-  if (xp >= 800) return 2;
-  if (xp >= 250) return 1;
+  if (xp >= 400) return 4;
+  if (xp >= 300) return 3;
+  if (xp >= 200) return 2;
+  if (xp >= 100) return 1;
   return 0;
 }
 

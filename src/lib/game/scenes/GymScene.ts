@@ -38,6 +38,50 @@ export class GymScene extends Phaser.Scene {
   private activeEquipment: Equipment | null = null;
   private initData: GymSceneInitData = {};
 
+  // Bound EventBus handler references — kept so shutdown() can remove exactly
+  // these listeners (EventBus.off(type) with no handler clears ALL listeners
+  // for that event, including AudioManager's and GameHUD's, so we must pass
+  // the specific function reference here rather than the bare event name).
+  private onNpcPaid = ({ amount }: { amount: number }) => {
+    this.incomeSystem.spawnNpcPay(
+      this.cashPoint.x + Phaser.Math.Between(-20, 20),
+      this.cashPoint.y - 30,
+      amount
+    );
+    this.tweens.add({ targets: this.cashGlow, fillAlpha: 0.5, duration: 300, yoyo: true });
+  };
+
+  private onWorkoutComplete = ({ xpEarned, tokensEarned, equipmentId }: { xpEarned: number; tokensEarned: number; equipmentId: string }) => {
+    const eq = this.equipment.find((e) => e.equipId === equipmentId);
+    if (eq) {
+      this.incomeSystem.spawnXpReward(eq.x, eq.y - 40, xpEarned);
+      this.incomeSystem.spawnTokenReward(eq.x + 20, eq.y - 20, tokensEarned);
+      // Camera shake on completion
+      this.camera.shake(120, 0.004);
+      // Spawn completion particles
+      this.spawnCompletionBurst(eq.x, eq.y - 20);
+    }
+    this.player.setPlayerState("IDLE");
+    this.activeEquipment = null;
+  };
+
+  private onSceneSwitch = ({ to }: { to: "GymScene" | "HomeScene" | "WorkoutScene" }) => {
+    if (to !== "GymScene") {
+      // Fade out before switching
+      this.cameras.main.fadeOut(250, 9, 9, 15);
+      this.cameras.main.once("camerafadeoutcomplete", () => {
+        this.scene.start(to);
+      });
+    }
+  };
+
+  private onQuitWorkout = () => {
+    if (!this.activeEquipment) return;
+    this.activeEquipment.quitWorkout();
+    this.activeEquipment = null;
+    this.player.setPlayerState("IDLE");
+  };
+
   // Income collection point
   private cashPoint!: Phaser.GameObjects.Container;
   private cashGlow!: Phaser.GameObjects.Arc;
@@ -154,42 +198,19 @@ export class GymScene extends Phaser.Scene {
     );
 
     // ── EventBus listeners ────────────────────────────────────────────────────
-    EventBus.on("npc:paid", ({ amount }) => {
-      this.incomeSystem.spawnNpcPay(
-        this.cashPoint.x + Phaser.Math.Between(-20, 20),
-        this.cashPoint.y - 30,
-        amount
-      );
-      this.tweens.add({ targets: this.cashGlow, fillAlpha: 0.5, duration: 300, yoyo: true });
-    });
-
-    EventBus.on("workout:complete", ({ xpEarned, tokensEarned, equipmentId }) => {
-      const eq = this.equipment.find((e) => e.equipId === equipmentId);
-      if (eq) {
-        this.incomeSystem.spawnXpReward(eq.x, eq.y - 40, xpEarned);
-        this.incomeSystem.spawnTokenReward(eq.x + 20, eq.y - 20, tokensEarned);
-        // Camera shake on completion
-        this.camera.shake(120, 0.004);
-        // Spawn completion particles
-        this.spawnCompletionBurst(eq.x, eq.y - 20);
-      }
-      this.player.setPlayerState("IDLE");
-      this.activeEquipment = null;
-    });
-
-    EventBus.on("scene:switch", ({ to }) => {
-      if (to !== "GymScene") {
-        // Fade out before switching
-        this.cameras.main.fadeOut(250, 9, 9, 15);
-        this.cameras.main.once("camerafadeoutcomplete", () => {
-          this.scene.start(to);
-        });
-      }
-    });
+    EventBus.on("npc:paid", this.onNpcPaid);
+    EventBus.on("workout:complete", this.onWorkoutComplete);
+    EventBus.on("scene:switch", this.onSceneSwitch);
+    EventBus.on("hud:quit_workout", this.onQuitWorkout);
 
     // Fade in on scene start
     this.cameras.main.fadeIn(400, 9, 9, 15);
     EventBus.emit("scene:ready", { name: "GymScene" });
+
+    // create() re-runs every time this scene is started, so the EventBus
+    // listeners above must be torn down on shutdown or they pile up and
+    // keep firing against this now-destroyed scene's game objects.
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.shutdown, this);
   }
 
   // ── Parallax city background ────────────────────────────────────────────────
@@ -491,10 +512,13 @@ export class GymScene extends Phaser.Scene {
   update(time: number, delta: number) {
     this.controller.update(delta);
 
-    // Equipment
-    for (const eq of this.equipment) {
-      const finished = eq.updateWorkout(delta);
-      if (finished && this.activeEquipment?.equipId === eq.equipId) {
+    // Equipment — only tick the player's own active equipment.
+    // NPC-occupied equipment sets isOccupied directly (see NpcManager) and must
+    // never run through Equipment.updateWorkout, or it fires a stale workout:complete
+    // and pops the player's XP reward modal for NPC activity.
+    if (this.activeEquipment) {
+      const finished = this.activeEquipment.updateWorkout(delta);
+      if (finished) {
         this.activeEquipment = null;
       }
     }
@@ -555,9 +579,10 @@ export class GymScene extends Phaser.Scene {
   }
 
   shutdown() {
-    EventBus.off("npc:paid");
-    EventBus.off("workout:complete");
-    EventBus.off("scene:switch");
+    EventBus.off("npc:paid", this.onNpcPaid);
+    EventBus.off("workout:complete", this.onWorkoutComplete);
+    EventBus.off("scene:switch", this.onSceneSwitch);
+    EventBus.off("hud:quit_workout", this.onQuitWorkout);
     this.controller.destroy();
     this.dustEmitter?.destroy();
   }

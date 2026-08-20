@@ -52,9 +52,9 @@ export default function CreateGymPage() {
             border: "1px solid rgba(245,197,24,0.3)",
           }}
         >
-          <p style={{ margin: "0 0 4px", fontWeight: 700 }}>💰 Cost: 500 GYMFIT</p>
+          <p style={{ margin: "0 0 4px", fontWeight: 700 }}>⚡ Cost: 500 XP</p>
           <p style={{ margin: 0, fontSize: "13px", color: "var(--text-secondary)" }}>
-            Gym creation is a one-time token burn. This keeps the market healthy.
+            Gym creation is a one-time XP burn from your spendable pool. This keeps the market healthy.
           </p>
         </div>
 
@@ -130,7 +130,7 @@ export default function CreateGymPage() {
             style={{ width: "100%" }}
             disabled={loading}
           >
-            {loading ? "Creating..." : "🏗️ Create Gym (500 GYMFIT)"}
+            {loading ? "Creating..." : "🏗️ Create Gym (500 XP)"}
           </button>
         </form>
       </div>
