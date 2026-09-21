@@ -5,6 +5,11 @@
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import * as dotenv from "dotenv";
+import {
+  equipmentSpec,
+  equipmentUpgradeCost,
+  equipmentGradeForGymTier,
+} from "../src/lib/game/engine";
 
 // Load env vars (Prisma CLI doesn't load Next.js env automatically)
 dotenv.config({ path: ".env" });
@@ -203,29 +208,62 @@ async function main() {
   }
 
   // ── Equipment for system gyms ──────────────────────────────────────────────
-  const gymEquipment = [
-    { name: "Power Rack",    type: "strength",    cost: BigInt(200), statBonus: { strength: 0.05 } },
-    { name: "Treadmill",     type: "cardio",      cost: BigInt(150), statBonus: { stamina: 0.05 } },
-    { name: "Dumbbells Set", type: "free_weights", cost: BigInt(100), statBonus: { strength: 0.03 } },
-  ];
+  // Types must be catalog keys (see EQUIPMENT_CATALOG in src/lib/game/engine.ts):
+  // that key is what the game world, the dashboard tiles and the workout payout
+  // all resolve a machine by. A row whose type is not in the catalog cannot be
+  // rendered or priced anywhere.
+  const FLOORS: Record<string, string[]> = {
+    "gym-ironhaven":   ["bench", "cable", "treadmill"],        // strength
+    "gym-burnzone":    ["treadmill", "bike", "cable"],         // fat loss
+    "gym-titanpeak":   ["bench", "treadmill", "squat", "rower"], // hybrid, tier 2
+    "gym-gravity":     ["cable", "bike", "treadmill"],         // calisthenics
+    "gym-cornerstone": ["bench", "treadmill", "bike"],         // general
+    "gym-basecamp":    ["treadmill", "bike", "cable"],         // general
+  };
 
   for (const gym of gyms) {
-    for (const eq of gymEquipment) {
-      await prisma.equipment.upsert({
-        where: { id: `eq-${gym.id}-${eq.name.replace(/\s/g, "")}` },
-        update: {},
-        create: {
-          id: `eq-${gym.id}-${eq.name.replace(/\s/g, "")}`,
-          gymId: gym.id,
-          name: eq.name,
-          type: eq.type,
-          level: 1,
-          purchaseCost: eq.cost,
-          upgradeCost: BigInt(Number(eq.cost) * 2),
-          capacity: 5,
-          statBonus: eq.statBonus,
-        },
+    const floor = FLOORS[gym.id] ?? ["bench", "treadmill", "bike"];
+    for (const type of floor) {
+      const spec = equipmentSpec(type);
+      if (!spec) throw new Error(`Seed references unknown equipment type "${type}"`);
+      if (spec.grade > equipmentGradeForGymTier(gym.tier)) {
+        throw new Error(
+          `${spec.name} is grade ${spec.grade}; ${gym.name} is tier ${gym.tier} (max grade ${equipmentGradeForGymTier(gym.tier)})`
+        );
+      }
+      // Keyed on gym + type, not on a generated id: rows predating the catalog
+      // were repaired in place and kept their original ids, so an id-based
+      // upsert would install a second copy of the same machine.
+      const existing = await prisma.equipment.findFirst({
+        where: { gymId: gym.id, type: spec.type },
+        select: { id: true, level: true },
       });
+
+      if (existing) {
+        await prisma.equipment.update({
+          where: { id: existing.id },
+          data: {
+            name: spec.name,
+            capacity: spec.capacity,
+            purchaseCost: BigInt(spec.purchaseCost),
+            upgradeCost: equipmentUpgradeCost(spec, existing.level),
+            statBonus: { planType: spec.planType, intensity: spec.intensity, grade: spec.grade },
+          },
+        });
+      } else {
+        await prisma.equipment.create({
+          data: {
+            gymId: gym.id,
+            name: spec.name,
+            type: spec.type,
+            level: 1,
+            purchaseCost: BigInt(spec.purchaseCost),
+            upgradeCost: equipmentUpgradeCost(spec, 1),
+            capacity: spec.capacity,
+            statBonus: { planType: spec.planType, intensity: spec.intensity, grade: spec.grade },
+          },
+        });
+      }
     }
   }
 

@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { GameWorld } from "@/components/game/GameWorld";
+import { GameWorld, type InstalledEquipment } from "@/components/game/GameWorld";
 import { XpBar } from "@/components/xp/XpBar";
 import { useXpRegen } from "@/hooks/useXpRegen";
 
@@ -19,6 +19,10 @@ interface GameDashboardClientProps {
   initialLastRegenAt: string;
   gymName?: string;
   hasGym: boolean;
+  /** Equipment installed at the player's gym — shown on the gym tiles. */
+  gymEquipment?: InstalledEquipment[];
+  /** Amenity catalog keys the gym has bought. */
+  gymAmenities?: string[];
 }
 
 export function GameDashboardClient({
@@ -29,6 +33,8 @@ export function GameDashboardClient({
   initialLastRegenAt,
   gymName,
   hasGym,
+  gymEquipment,
+  gymAmenities,
 }: GameDashboardClientProps) {
   const [currentXp, setCurrentXp] = useState(initialXp);
   const [overflowXp, setOverflowXp] = useState(initialOverflow);
@@ -70,6 +76,7 @@ export function GameDashboardClient({
         overflowXp={overflowXp}
         restUntil={restUntil}
         lastXpRegenAt={lastRegenAt}
+        transformationStage={character?.transformationStage}
       />
 
       {/* World mode toggle */}
@@ -145,6 +152,8 @@ export function GameDashboardClient({
         restUntil={restUntil}
         gymName={gymName}
         isHome={worldMode === "home"}
+        gymEquipment={gymEquipment}
+        gymAmenities={gymAmenities}
         onXpChange={handleXpChange}
       />
     </div>

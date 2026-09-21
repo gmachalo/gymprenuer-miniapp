@@ -1,5 +1,5 @@
 {
-  "name": "gymtyc-miniapp",
+  "name": "gymprenuer-miniapp",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -10,7 +10,9 @@
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:seed": "prisma db seed",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "db:reset-progression": "ts-node -P prisma/tsconfig.script.json prisma/reset-progression.ts",
+    "db:repair-equipment": "ts-node -P prisma/tsconfig.script.json prisma/repair-gym-equipment.ts"
   },
   "prisma": {
     "seed": "ts-node --compiler-options {\"module\":\"CommonJS\"} prisma/seed.ts"

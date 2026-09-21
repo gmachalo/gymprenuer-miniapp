@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import { BODY_TYPE_BASE_STATS, startingStatsFor, STAT_PER_LEVEL } from "@/lib/game/engine";
 
 // ─── Data ───────────────────────────────────────────────────────────────────
 
@@ -11,7 +12,7 @@ const BODY_TYPES = [
     emoji: "🦴",
     label: "Lean",
     desc: "High metabolism. Low strength but fast stamina gains.",
-    stats: { STR: 6, STA: 12, DIS: 10, MET: 14 },
+    stats: BODY_TYPE_BASE_STATS.SKINNY,
     color: "#4cc9f0",
   },
   {
@@ -19,7 +20,7 @@ const BODY_TYPES = [
     emoji: "🧑",
     label: "Average",
     desc: "Balanced starting stats. Most flexible build.",
-    stats: { STR: 10, STA: 10, DIS: 10, MET: 10 },
+    stats: BODY_TYPE_BASE_STATS.AVERAGE,
     color: "#6c47ff",
   },
   {
@@ -27,7 +28,7 @@ const BODY_TYPES = [
     emoji: "🐻",
     label: "Bulky",
     desc: "High strength base. Slow metabolism but powerful.",
-    stats: { STR: 14, STA: 6, DIS: 8, MET: 6 },
+    stats: BODY_TYPE_BASE_STATS.OVERWEIGHT,
     color: "#ff6b35",
   },
   {
@@ -36,12 +37,19 @@ const BODY_TYPES = [
     emoji: "🎲",
     label: "Random",
     desc: "Let the game decide. Surprise yourself!",
-    stats: { STR: 0, STA: 0, DIS: 0, MET: 0 },
+    stats: { strength: 0, stamina: 0, discipline: 0, metabolism: 0 },
     color: "#f72585",
   },
 ];
 
 const REAL_BODY_TYPES = ["SKINNY", "AVERAGE", "OVERWEIGHT"] as const;
+
+const STAT_LABELS = [
+  ["strength", "STR"],
+  ["stamina", "STA"],
+  ["discipline", "DIS"],
+  ["metabolism", "MET"],
+] as const;
 
 const WORKOUT_PLANS = [
   {
@@ -96,7 +104,7 @@ const GAME_MODES = [
 ];
 
 const STEPS = ["Welcome", "Body Type", "Character", "Goals", "Mode", "Done"];
-const STORAGE_KEY = "gymtyc_onboarding";
+const STORAGE_KEY = "gymprenuer_onboarding";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -201,7 +209,16 @@ export default function OnboardingPage() {
       const charRes = await fetch("/api/game/character", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: charName.trim(), bodyType: resolvedBodyType }),
+        body: JSON.stringify({
+          name: charName.trim(),
+          bodyType: resolvedBodyType,
+          // Goals and training environment tilt the opening stat block —
+          // see startingStatsFor() in the game engine.
+          planTypes: selectedPlans
+            .map((id) => WORKOUT_PLANS.find((p) => p.id === id)?.type)
+            .filter((t): t is string => !!t),
+          workoutEnv: soloWorkoutEnv,
+        }),
       });
       const charData = await charRes.json();
       if (!charRes.ok) {
@@ -253,6 +270,16 @@ export default function OnboardingPage() {
 
   // ── Derived ───────────────────────────────────────────────────────────────
   const selectedBodyType = BODY_TYPES.find((b) => b.type === selectedType);
+
+  // What the character will actually open on, given every pick so far. RANDOM
+  // is previewed as AVERAGE since the real roll happens at submit.
+  const previewStats = startingStatsFor({
+    bodyType: selectedType === "RANDOM" || !selectedType ? "AVERAGE" : selectedType,
+    planTypes: selectedPlans
+      .map((id) => WORKOUT_PLANS.find((p) => p.id === id)?.type)
+      .filter((t): t is string => !!t),
+    workoutEnv: soloWorkoutEnv,
+  });
   const isResuming = step > 0 && step < 5;
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -410,7 +437,7 @@ export default function OnboardingPage() {
             </div>
 
             <h1 className="gradient-text" style={{ fontSize: "34px", fontWeight: 900, margin: "0 0 10px", lineHeight: 1.1 }}>
-              Welcome to<br />Gym Tycoon
+              Welcome to<br />GymPrenuer
             </h1>
             <p style={{ color: "var(--text-secondary)", margin: "0 0 32px", lineHeight: 1.7, fontSize: "14px" }}>
               Build your character. Train hard.<br />Own your gym. Earn GYMFIT on Base.
@@ -421,7 +448,7 @@ export default function OnboardingPage() {
               {[
                 { icon: "🎮", title: "Live Game World",  desc: "Control your character in a real-time gym", color: "#6c47ff" },
                 { icon: "💪", title: "Train & Earn",     desc: "XP + GYMFIT tokens for every workout",     color: "#f72585" },
-                { icon: "🏢", title: "Gym Tycoon",       desc: "Buy, upgrade and manage your own gym",     color: "#f59e0b" },
+                { icon: "🏢", title: "Own a Gym",        desc: "Buy, upgrade and manage your own gym",     color: "#f59e0b" },
                 { icon: "💰", title: "Passive Income",   desc: "NPCs pay fees — collect while you sleep",  color: "#00d4aa" },
               ].map((f) => (
                 <div key={f.title} style={{
@@ -516,10 +543,10 @@ export default function OnboardingPage() {
                     <p style={{ margin: b.type === "RANDOM" ? "0" : "0 0 10px", fontSize: "11px", color: "var(--text-secondary)", lineHeight: 1.4 }}>{b.desc}</p>
                     {b.type !== "RANDOM" && (
                       <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
-                        {Object.entries(b.stats).map(([k, v]) => (
-                          <div key={k} style={{ display: "flex", justifyContent: "space-between", fontSize: "11px" }}>
-                            <span style={{ color: "var(--text-muted)" }}>{k}</span>
-                            <span style={{ fontWeight: 700 }}>{v}</span>
+                        {STAT_LABELS.map(([key, label]) => (
+                          <div key={key} style={{ display: "flex", justifyContent: "space-between", fontSize: "11px" }}>
+                            <span style={{ color: "var(--text-muted)" }}>{label}</span>
+                            <span style={{ fontWeight: 700 }}>{b.stats[key]}</span>
                           </div>
                         ))}
                       </div>
@@ -663,7 +690,7 @@ export default function OnboardingPage() {
               <div style={{ fontSize: "40px", marginBottom: "8px" }}>🎮</div>
               <h2 style={{ fontSize: "24px", fontWeight: 800, margin: "0 0 6px" }}>Choose Your Path</h2>
               <p style={{ color: "var(--text-secondary)", fontSize: "13px", margin: 0 }}>
-                How do you want to play Gym Tycoon?
+                How do you want to play GymPrenuer?
               </p>
             </div>
 
@@ -784,6 +811,33 @@ export default function OnboardingPage() {
                 </p>
               </div>
             )}
+
+            {/* Opening stats — the sum of every choice made so far */}
+            <div
+              style={{
+                border: "1px solid var(--border-subtle)",
+                background: "var(--bg-card)",
+                borderRadius: "14px",
+                padding: "14px",
+                marginBottom: "16px",
+              }}
+            >
+              <p style={{ margin: "0 0 10px", fontSize: "12px", fontWeight: 700, letterSpacing: "0.4px", color: "var(--text-secondary)" }}>
+                YOUR STARTING STATS
+              </p>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "8px" }}>
+                {STAT_LABELS.map(([key, label]) => (
+                  <div key={key} style={{ textAlign: "center" }}>
+                    <p style={{ margin: "0 0 2px", fontSize: "10px", color: "var(--text-muted)" }}>{label}</p>
+                    <p style={{ margin: 0, fontSize: "18px", fontWeight: 800 }}>{previewStats[key]}</p>
+                  </div>
+                ))}
+              </div>
+              <p style={{ margin: "10px 0 0", fontSize: "11px", color: "var(--text-muted)", lineHeight: 1.5 }}>
+                Every stat needs <strong>{STAT_PER_LEVEL}</strong> to reach Lv.2. Train in-game — or link
+                your workout app in your profile and let real sessions do it.
+              </p>
+            </div>
 
             <button
               id="mode-next"

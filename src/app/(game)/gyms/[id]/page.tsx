@@ -1,10 +1,19 @@
 import { auth } from "@/auth";
 import { prisma } from "@/lib/db/prisma";
 import { redirect } from "next/navigation";
-import { calculateGymDailyIncome, trainerLevelRequirement } from "@/lib/game/engine";
+import {
+  calculateGymDailyIncome,
+  trainerLevelRequirement,
+  trainerActivationXpCost,
+  PRO_STAGE,
+  equipmentGradeForGymTier,
+  gymJoinLevelRequirement,
+} from "@/lib/game/engine";
 import { formatTokens } from "@/lib/utils";
 import GymJoinButton from "@/components/gym/GymJoinButton";
 import GymTrainerButton from "@/components/gym/GymTrainerButton";
+import GymEquipmentManager from "@/components/gym/GymEquipmentManager";
+import GymAmenityManager from "@/components/gym/GymAmenityManager";
 import { GYM_TIERS } from "@/app/api/game/gyms/[id]/upgrade/route";
 
 export default async function GymDetailPage(
@@ -16,7 +25,7 @@ export default async function GymDetailPage(
   const userId = session.user.id;
   const { id: gymId } = await props.params;
 
-  const [gym, user, membership] = await Promise.all([
+  const [gym, user, membership, character, currentMembership] = await Promise.all([
     prisma.gym.findUnique({
       where: { id: gymId },
       include: {
@@ -33,6 +42,12 @@ export default async function GymDetailPage(
     prisma.user.findUnique({ where: { id: userId } }),
     prisma.gymMember.findUnique({
       where: { gymId_userId: { gymId, userId } },
+    }),
+    prisma.character.findFirst({ where: { userId, isActive: true }, select: { transformationStage: true } }),
+    prisma.gymMember.findFirst({
+      where: { userId, gymId: { not: gymId } },
+      orderBy: { joinedAt: "desc" },
+      select: { gym: { select: { name: true } } },
     }),
   ]);
 
@@ -58,6 +73,11 @@ export default async function GymDetailPage(
   const isFull = gym.memberCount >= gym.maxMembers;
   const requiredTrainerLevel = trainerLevelRequirement(gym.tier);
   const isTrainer = membership?.role === "TRAINER";
+  const isPro = (character?.transformationStage ?? 0) >= PRO_STAGE;
+  const trainerActivationCost = trainerActivationXpCost(gym.tier);
+  // A gym's tier is what decides the grade of equipment on its floor.
+  const equipmentGrade = equipmentGradeForGymTier(gym.tier);
+  const requiredJoinLevel = gymJoinLevelRequirement(gym.tier);
 
   return (
     <div>
@@ -124,6 +144,10 @@ export default async function GymDetailPage(
               isMember={isMember}
               canAfford={canAfford}
               isFull={isFull}
+              requiredLevel={requiredJoinLevel}
+              playerLevel={user?.level ?? 1}
+              equipmentGrade={equipmentGrade}
+              currentGymName={currentMembership?.gym.name ?? null}
             />
           </div>
         )}
@@ -145,32 +169,25 @@ export default async function GymDetailPage(
                 gymId={gymId}
                 requiredLevel={requiredTrainerLevel}
                 playerLevel={user?.level ?? 1}
+                isPro={isPro}
+                activationCost={trainerActivationCost}
+                playerXp={totalXp}
               />
             )}
           </div>
         )}
 
-        {/* Equipment */}
-        {gym.equipment.length > 0 && (
-          <div style={{ marginBottom: "20px" }}>
-            <p className="section-title">🏋️ Equipment</p>
-            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-              {gym.equipment.map((eq) => (
-                <div key={eq.id} className="card" style={{ padding: "12px 16px" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <div>
-                      <p style={{ margin: "0 0 2px", fontWeight: 600, fontSize: "14px" }}>{eq.name}</p>
-                      <p style={{ margin: 0, fontSize: "12px", color: "var(--text-secondary)" }}>
-                        {eq.type} · Capacity {eq.capacity}
-                      </p>
-                    </div>
-                    <span className="badge badge-purple">Lvl {eq.level}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+        {/* Equipment floor — owners buy, upgrade, and tier up from here */}
+        <GymEquipmentManager
+          gymId={gymId}
+          balance={(user?.offChainTokens ?? BigInt(0)).toString()}
+        />
+
+        {/* Amenities — refreshments, facilities and rooms that hand XP back */}
+        <GymAmenityManager
+          gymId={gymId}
+          balance={(user?.offChainTokens ?? BigInt(0)).toString()}
+        />
 
         {/* Members */}
         {gym.members.length > 0 && (

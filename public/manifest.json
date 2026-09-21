@@ -1,6 +1,6 @@
 {
-  "name": "Gym Tycoon",
-  "short_name": "GymTycoon",
+  "name": "GymPrenuer",
+  "short_name": "GymPrenuer",
   "description": "Train. Build. Earn. The Web3 fitness simulation game on Base.",
   "start_url": "/",
   "display": "standalone",

@@ -1,4 +1,4 @@
-# Gym Tycoon Documentation Index
+# GymPrenuer Documentation Index
 
 ## Start Here
 
@@ -235,7 +235,7 @@ Error on startup?
 
 ## Quick Links
 
-- [Gym Tycoon GitHub](https://github.com/gmachalo/gymtyc-miniapp)
+- [GymPrenuer GitHub](https://github.com/gmachalo/gymtyc-miniapp)
 - [Vercel Dashboard](https://vercel.com/dashboard)
 - [Supabase Dashboard](https://supabase.com)
 - [NextAuth Documentation](https://authjs.dev/)

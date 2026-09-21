@@ -1,4 +1,4 @@
-# Gym Tycoon MVP - Local Setup Guide
+# GymPrenuer MVP - Local Setup Guide
 
 ## Prerequisites
 

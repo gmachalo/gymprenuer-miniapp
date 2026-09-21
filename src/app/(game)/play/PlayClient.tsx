@@ -10,6 +10,13 @@ const PhaserGame = dynamic(
   { ssr: false, loading: () => <GameLoadingScreen /> }
 );
 
+interface CharacterStats {
+  strength: number;
+  stamina: number;
+  discipline: number;
+  metabolism: number;
+}
+
 interface PlayClientProps {
   initData: GymSceneInitData;
   playerName: string;
@@ -19,6 +26,7 @@ interface PlayClientProps {
   lastXpRegenAt: string;
   offChainTokens: number;
   level: number;
+  characterStats: CharacterStats;
   streakCount: number;
   gymName?: string;
   hasGym: boolean;
@@ -33,6 +41,7 @@ export function PlayClient({
   lastXpRegenAt,
   offChainTokens,
   level,
+  characterStats,
   streakCount,
   gymName,
   hasGym,
@@ -51,6 +60,7 @@ export function PlayClient({
         initialLastRegenAt={lastXpRegenAt}
         initialTokens={offChainTokens}
         initialLevel={level}
+        characterStats={characterStats}
         streakCount={streakCount}
         gymName={gymName}
         hasGym={hasGym}
@@ -68,7 +78,7 @@ function GameLoadingScreen() {
       alignItems: "center", justifyContent: "center", gap: "20px",
     }}>
       <div style={{ fontSize: "64px", animation: "spin-slow 2s linear infinite" }}>🏋️</div>
-      <div style={{ fontSize: "16px", color: "#a78bfa", fontWeight: 700 }}>Loading Gym Tycoon...</div>
+      <div style={{ fontSize: "16px", color: "#a78bfa", fontWeight: 700 }}>Loading GymPrenuer...</div>
       <div style={{
         width: "200px", height: "4px",
         background: "#1e2030", borderRadius: "99px", overflow: "hidden",

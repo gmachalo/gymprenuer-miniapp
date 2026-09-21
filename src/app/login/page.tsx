@@ -58,7 +58,7 @@ export default function LoginPage() {
           }}
           className="gradient-text"
         >
-          GYM TYCOON
+          GYMPRENUER
         </h1>
         <p
           style={{

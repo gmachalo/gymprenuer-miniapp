@@ -5,8 +5,9 @@ interface WorkoutSpotProps {
   icon: string;
   label: string;
   xpCost: number;
-  xpReward: string;
   tokenReward: string;
+  /** Upgrade level of the installed machine — badged when the owner has invested in it. */
+  level?: number;
   disabled?: boolean;
   disabledReason?: string;
   occupied?: boolean;
@@ -18,8 +19,8 @@ export function WorkoutSpot({
   icon,
   label,
   xpCost,
-  xpReward,
   tokenReward,
+  level = 1,
   disabled,
   disabledReason,
   occupied,
@@ -34,6 +35,7 @@ export function WorkoutSpot({
         flexDirection: "column",
         alignItems: "center",
         gap: "4px",
+        width: "84px",
         ...style,
       }}
     >
@@ -45,6 +47,7 @@ export function WorkoutSpot({
         style={{
           width: "72px",
           height: "72px",
+          position: "relative",
           borderRadius: "14px",
           border: `2px solid ${
             occupied ? "#f59e0b" : disabled ? "var(--border-subtle)" : "rgba(108,71,255,0.5)"
@@ -66,17 +69,40 @@ export function WorkoutSpot({
         }}
       >
         <span style={{ fontSize: "28px" }}>{icon}</span>
+        {level > 1 && (
+          <span
+            style={{
+              position: "absolute",
+              top: "4px",
+              right: "6px",
+              fontSize: "8px",
+              fontWeight: 800,
+              color: "#a78bfa",
+            }}
+          >
+            Lv.{level}
+          </span>
+        )}
         <span style={{ fontSize: "9px", color: "var(--text-muted)", fontWeight: 600 }}>
-          {occupied ? "IN USE" : `${xpCost} XP`}
+          {occupied ? "IN USE" : `-${xpCost} XP`}
         </span>
       </button>
 
-      {/* Label */}
-      <span style={{ fontSize: "10px", color: "var(--text-secondary)", fontWeight: 600 }}>
+      {/* Label — capped to the tile so long names wrap instead of spilling */}
+      <span
+        style={{
+          fontSize: "10px",
+          color: "var(--text-secondary)",
+          fontWeight: 600,
+          maxWidth: "84px",
+          textAlign: "center",
+          lineHeight: 1.2,
+        }}
+      >
         {label}
       </span>
 
-      {/* Reward preview */}
+      {/* Token reward preview */}
       {!disabled && !occupied && (
         <div
           style={{
@@ -85,8 +111,7 @@ export function WorkoutSpot({
             fontSize: "9px",
           }}
         >
-          <span style={{ color: "#a78bfa" }}>+{xpReward} XP</span>
-          <span style={{ color: "#00d4aa" }}>+{tokenReward}</span>
+          <span style={{ color: "#00d4aa" }}>+{tokenReward} 🪙</span>
         </div>
       )}
 

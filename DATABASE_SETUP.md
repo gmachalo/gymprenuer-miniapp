@@ -1,4 +1,4 @@
-# Database Setup Guide for Gym Tycoon
+# Database Setup Guide for GymPrenuer
 
 ## Error: P1013 - Invalid Database String
 

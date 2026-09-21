@@ -2,13 +2,34 @@ import Phaser from "phaser";
 import { Player } from "@/lib/game/entities/Player";
 import { PlayerController } from "@/lib/game/systems/PlayerController";
 import { Equipment } from "@/lib/game/entities/Equipment";
+import { RecoveryProp } from "@/lib/game/entities/RecoveryProp";
 import { IncomeSystem } from "@/lib/game/systems/IncomeSystem";
 import { EventBus } from "@/lib/game/EventBus";
+import { HOME_RECOVERY_ITEMS, HomeRecoveryItemId, homeEquipment, equipmentTokenYield } from "@/lib/game/engine";
 
-const HOME_EQUIPMENT = [
-  { id: "yoga",    name: "Yoga Mat",    tex: "eq_yoga",   x: 120, y: 220, xpCost: 5, xpReward: 8,  tokens: 3, intensity: "LOW"    as const },
-  { id: "pushups", name: "Push-ups",    tex: "eq_cable",  x: 260, y: 220, xpCost: 5, xpReward: 8,  tokens: 3, intensity: "MEDIUM" as const },
-  { id: "pullup",  name: "Pull-up Bar", tex: "eq_pullup", x: 200, y: 340, xpCost: 8, xpReward: 12, tokens: 5, intensity: "HIGH"   as const },
+// Home is grade 1 — the baseline every gym is measured against. The catalog in
+// the engine owns the numbers so home and gym equipment can never drift apart.
+const HOME_LAYOUT: Record<string, { x: number; y: number }> = {
+  yoga:    { x: 120, y: 220 },
+  pushups: { x: 260, y: 220 },
+  pullup:  { x: 200, y: 340 },
+};
+
+const HOME_EQUIPMENT = homeEquipment().map((spec) => ({
+  id: spec.type,
+  name: spec.name,
+  tex: spec.tex,
+  x: HOME_LAYOUT[spec.type]?.x ?? 200,
+  y: HOME_LAYOUT[spec.type]?.y ?? 220,
+  xpCost: spec.xpCost,
+  tokens: equipmentTokenYield(spec, 1),
+  intensity: spec.intensity,
+}));
+
+const RECOVERY_PROPS: Array<{ id: HomeRecoveryItemId; tex: string; x: number; y: number; accentColor: number }> = [
+  { id: "bed",    tex: "prop_bed",    x: 70,  y: 420, accentColor: 0xf59e0b },
+  { id: "chair",  tex: "prop_chair",  x: 400, y: 250, accentColor: 0xfbbf24 },
+  { id: "fridge", tex: "prop_fridge", x: 400, y: 420, accentColor: 0x4cc9f0 },
 ];
 
 export interface HomeSceneInitData {
@@ -21,9 +42,12 @@ export class HomeScene extends Phaser.Scene {
   private player!: Player;
   private controller!: PlayerController;
   private equipment: Equipment[] = [];
+  private recoveryProps: RecoveryProp[] = [];
   private incomeSystem!: IncomeSystem;
   private initData: HomeSceneInitData = {};
   private activeEquipment: Equipment | null = null;
+  // Guards shutdown() against running twice when both SHUTDOWN and DESTROY fire.
+  private tornDown = false;
 
   // Ambient
   private windowLightTimer = 0;
@@ -39,10 +63,10 @@ export class HomeScene extends Phaser.Scene {
   // these listeners (EventBus.off(type) with no handler clears ALL listeners
   // for that event, including AudioManager's and GameHUD's, so we must pass
   // the specific function reference here rather than the bare event name).
-  private onWorkoutComplete = ({ xpEarned, tokensEarned, equipmentId }: { xpEarned: number; tokensEarned: number; equipmentId: string }) => {
+  private onWorkoutComplete = ({ xpCost, tokensEarned, equipmentId }: { xpCost: number; tokensEarned: number; equipmentId: string }) => {
     const eq = this.equipment.find((e) => e.equipId === equipmentId);
     if (eq) {
-      this.incomeSystem.spawnXpReward(eq.x, eq.y - 40, xpEarned);
+      this.incomeSystem.spawnXpCost(eq.x, eq.y - 40, xpCost);
       this.incomeSystem.spawnTokenReward(eq.x + 20, eq.y - 20, tokensEarned);
       this.cameras.main.shake(100, 0.003);
     }
@@ -82,6 +106,7 @@ export class HomeScene extends Phaser.Scene {
     // from every previous session, including ones Phaser has since destroyed
     // (accessing a destroyed GameObject's `.scene` throws).
     this.equipment = [];
+    this.recoveryProps = [];
     this.activeEquipment = null;
 
     this.cameras.main.setBackgroundColor(0x0c0b07);
@@ -91,10 +116,21 @@ export class HomeScene extends Phaser.Scene {
       const eq = new Equipment({
         scene: this, x: cfg.x, y: cfg.y,
         id: cfg.id, name: cfg.name, textureKey: cfg.tex,
-        xpCost: cfg.xpCost, xpReward: cfg.xpReward,
+        xpCost: cfg.xpCost,
         tokenReward: cfg.tokens, intensity: cfg.intensity,
       });
       this.equipment.push(eq);
+    });
+
+    RECOVERY_PROPS.forEach((cfg) => {
+      const config = HOME_RECOVERY_ITEMS[cfg.id];
+      const prop = new RecoveryProp({
+        scene: this, x: cfg.x, y: cfg.y,
+        id: cfg.id, label: config.label, verb: config.verb,
+        textureKey: cfg.tex, xpGain: config.xpGain,
+        accentColor: cfg.accentColor,
+      });
+      this.recoveryProps.push(prop);
     });
 
     this.player = new Player({
@@ -129,6 +165,14 @@ export class HomeScene extends Phaser.Scene {
     this.rgbStrip = this.add.graphics().setDepth(2);
     this.drawRgbStrip(W, H);
 
+    // Detach first — teardown paths that skip SHUTDOWN (a game.destroy() from a
+    // React unmount or an HMR reload) leave the previous registration in place,
+    // and mitt stores the same handler twice. off() on an unregistered handler
+    // is a no-op, so this is safe on the first create() too.
+    EventBus.off("workout:complete", this.onWorkoutComplete);
+    EventBus.off("scene:switch", this.onSceneSwitch);
+    EventBus.off("hud:quit_workout", this.onQuitWorkout);
+
     EventBus.on("workout:complete", this.onWorkoutComplete);
     EventBus.on("scene:switch", this.onSceneSwitch);
     EventBus.on("hud:quit_workout", this.onQuitWorkout);
@@ -136,9 +180,14 @@ export class HomeScene extends Phaser.Scene {
     EventBus.emit("scene:ready", { name: "HomeScene" });
 
     // create() re-runs every time this scene is started, so the EventBus
-    // listeners above must be torn down on shutdown or they pile up and
-    // keep firing against this now-destroyed scene's game objects.
+    // listeners above must be torn down or they pile up and keep firing against
+    // this now-destroyed scene's game objects. Both events are wired because
+    // they cover different paths: a scene switch emits SHUTDOWN, while the
+    // game.destroy(true) on React unmount emits only DESTROY. shutdown() is
+    // idempotent, so it is fine when both fire.
+    this.tornDown = false;
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.shutdown, this);
+    this.events.once(Phaser.Scenes.Events.DESTROY, this.shutdown, this);
   }
 
   private drawHomeLayout(W: number, H: number) {
@@ -257,6 +306,44 @@ export class HomeScene extends Phaser.Scene {
         return;
       }
     }
+
+    for (const prop of this.recoveryProps) {
+      const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, prop.x, prop.y);
+      if (dist < 70 && prop.isReady()) {
+        this.useRecoveryProp(prop);
+        return;
+      }
+    }
+  }
+
+  private async useRecoveryProp(prop: RecoveryProp) {
+    if (!prop.isReady()) return;
+    // Optimistically lock it immediately so a double-tap can't fire twice
+    // before the response comes back; a failure re-opens it below.
+    prop.activate(HOME_RECOVERY_ITEMS[prop.propId as HomeRecoveryItemId].cooldownMs);
+
+    try {
+      const res = await fetch("/api/game/home/recover", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ item: prop.propId }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        this.incomeSystem.spawnXpGain(prop.x, prop.y - 40, data.xpGained);
+        prop.activate(data.cooldownMs);
+        EventBus.emit("player:xp_changed", {
+          currentXp: data.currentXp,
+          overflowXp: data.overflowXp,
+          restUntil: data.restUntil ?? null,
+        });
+      } else {
+        prop.activate(0); // not actually on cooldown — let the player try again
+        this.incomeSystem.spawnReward(prop.x, prop.y - 40, data.error ?? "Can't use that yet", "#f87171");
+      }
+    } catch {
+      prop.activate(0);
+    }
   }
 
   update(_time: number, delta: number) {
@@ -270,6 +357,10 @@ export class HomeScene extends Phaser.Scene {
     for (const eq of this.equipment) {
       const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, eq.x, eq.y);
       eq.showPrompt(dist < 70 && !eq.isOccupied);
+    }
+    for (const prop of this.recoveryProps) {
+      const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, prop.x, prop.y);
+      prop.showPrompt(dist < 70);
     }
     this.player.updateDepth();
 
@@ -288,6 +379,8 @@ export class HomeScene extends Phaser.Scene {
   }
 
   shutdown() {
+    if (this.tornDown) return;
+    this.tornDown = true;
     EventBus.off("workout:complete", this.onWorkoutComplete);
     EventBus.off("scene:switch", this.onSceneSwitch);
     EventBus.off("hud:quit_workout", this.onQuitWorkout);

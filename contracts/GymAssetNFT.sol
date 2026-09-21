@@ -8,7 +8,7 @@ import "@openzeppelin/contracts/utils/Strings.sol";
 
 /**
  * @title GymAssetNFT
- * @notice ERC-1155 multi-token for all Gym Tycoon in-game assets.
+ * @notice ERC-1155 multi-token for all GymPrenuer in-game assets.
  *
  * Token ID ranges:
  *   0    – 9,999   : Character types (body type + stage combos)
@@ -22,7 +22,7 @@ contract GymAssetNFT is ERC1155Supply, AccessControl {
     bytes32 public constant MINTER_ROLE  = keccak256("MINTER_ROLE");
     bytes32 public constant URI_SETTER   = keccak256("URI_SETTER");
 
-    string public name   = "Gym Tycoon Assets";
+    string public name   = "GymPrenuer Assets";
     string public symbol = "GYMFT";
 
     string private _baseURI;

@@ -63,9 +63,11 @@ model User {
   offChainTokens  BigInt    @default(0)
   onChainSynced   Boolean   @default(false)
   onboardingDone  Boolean   @default(false)
-  currentXp       Int       @default(20)   // 0–100 visible bar
+  currentXp       Int       @default(100)  // 0–100 visible bar; spendable energy, not a reward
   overflowXp      Int       @default(0)    // XP above 100, spendable (pool capped at MAX_XP_ACCUMULATION)
   trainerEarningsMicro BigInt @default(0)  // pending trainer GYMFIT pay, in micro-units (100 000 micro = 1 GYMFIT)
+  homeRecoveryUsedAt Json    @default("{}") // { bed?, chair?, fridge?: ISO datetime } — per-item cooldown for HomeScene recovery props
+  gymAmenityUsedAt   Json    @default("{}") // { <amenity type>: ISO datetime } — per-amenity cooldown for GymScene amenities
   lastXpRegenAt   DateTime  @default(now())
   restUntil       DateTime?               // null = not resting
   createdAt       DateTime  @default(now())
@@ -83,6 +85,8 @@ model User {
   transactions    Transaction[]
   challenges      Challenge[]     @relation("ChallengeCreator")
   fitnessSyncs    FitnessSync[]
+  fitnessLinks    FitnessConnection[]
+  fitnessWorkouts FitnessWorkout[]
 }
 
 enum Mode {
@@ -106,8 +110,9 @@ model Character {
   nftTokenId          String?
   createdAt           DateTime  @default(now())
 
-  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  workouts Workout[]
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workouts        Workout[]
+  fitnessWorkouts FitnessWorkout[]
 }
 
 enum BodyType {
@@ -209,6 +214,7 @@ model Gym {
   members    GymMember[]
   coOwners   GymCoOwner[]
   equipment  Equipment[]
+  amenities  GymAmenity[]
   npcClients NpcClient[]
   challenges Challenge[]
 }
@@ -270,6 +276,28 @@ model Equipment {
   purchasedAt  DateTime @default(now())
 
   gym Gym @relation(fields: [gymId], references: [id], onDelete: Cascade)
+
+  // One machine of each catalog type per gym — the buy route and the seed both
+  // rely on this, and duplicates would render twice on the floor.
+  @@unique([gymId, type])
+}
+
+// ─── GYM AMENITIES ────────────────────────────────────────────────────────────
+// Refreshments, facilities and rooms the owner has bought. Standard fittings
+// (the water dispenser and shower every gym has from tier 1) are implicit in
+// the catalog and deliberately have no row here — see AMENITY_CATALOG.
+
+model GymAmenity {
+  id          String   @id @default(cuid())
+  gymId       String
+  type        String   // catalog key, see AMENITY_CATALOG in src/lib/game/engine.ts
+  installCost BigInt   @default(0)
+  installedAt DateTime @default(now())
+
+  gym Gym @relation(fields: [gymId], references: [id], onDelete: Cascade)
+
+  @@unique([gymId, type])
+  @@index([gymId])
 }
 
 // ─── NPC CLIENTS ─────────────────────────────────────────────────────────────
@@ -385,7 +413,77 @@ model FitnessSync {
   applied      Boolean   @default(false)
   createdAt    DateTime  @default(now())
 
+  provider FitnessProvider @default(MOCK)
+
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, syncDate])
+}
+
+// ─── IMPORTED REAL-WORLD WORKOUTS ─────────────────────────────────────────────
+// One row per session pulled from (or pushed by) the player's workout app. The
+// externalId unique is the dedupe key: re-pulling an overlapping window can
+// never award the same session's stats twice.
+
+model FitnessWorkout {
+  id           String          @id @default(cuid())
+  userId       String
+  characterId  String?
+  provider     FitnessProvider
+  externalId   String          // the session's id in the provider's system
+  performedAt  DateTime
+  durationMins Int
+  intensity    Intensity       @default(MEDIUM)
+  planType     PlanType        @default(HYBRID) // provider activity mapped onto a game plan type
+  adherencePct Decimal         @default(100) @db.Decimal(5, 2)
+
+  // Stat gain this session awarded the character
+  gainStrength   Int @default(0)
+  gainStamina    Int @default(0)
+  gainDiscipline Int @default(0)
+  gainMetabolism Int @default(0)
+
+  // False when the session failed an anti-cheat threshold — kept for the audit
+  // trail and to stop it being re-evaluated on the next pull.
+  counted   Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  character Character? @relation(fields: [characterId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, provider, externalId])
+  @@index([userId, performedAt])
+}
+
+// ─── FITNESS APP CONNECTION ───────────────────────────────────────────────────
+// A link to the workout app the player actually trains with. The game pulls
+// completed sessions from it and converts them into character stat gains, so
+// real training is what pushes a character over the level-up stat floor.
+
+model FitnessConnection {
+  id             String          @id @default(cuid())
+  userId         String
+  provider       FitnessProvider
+  externalUserId String?         // the player's id at the provider
+  accessToken    String?         // stored server-side only, never returned to the client
+  refreshToken   String?
+  expiresAt      DateTime?       // access token expiry
+  scope          String?
+  connectedAt    DateTime        @default(now())
+  lastSyncedAt   DateTime?       // watermark — only workouts after this are pulled
+  lastError      String?
+  active         Boolean         @default(true)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider])
+  @@index([userId])
+}
+
+enum FitnessProvider {
+  MOCK
+  STRAVA
+  FITBIT
+  GOOGLE_FIT
+  APPLE_HEALTH
 }

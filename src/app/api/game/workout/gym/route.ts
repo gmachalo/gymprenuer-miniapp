@@ -1,11 +1,20 @@
 import { NextRequest } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/db/prisma";
-import { applyXpReward, addTotalXp, trainerPayMicroForTier, MICRO_PER_GYMFIT } from "@/lib/game/engine";
+import {
+  spendXp,
+  calculateStatGain,
+  trainerPayMicroForTier,
+  MICRO_PER_GYMFIT,
+  equipmentSpec,
+  equipmentTokenYield,
+} from "@/lib/game/engine";
 
 const REST_DURATION_MS = 30 * 60 * 1000;
 
-// POST /api/game/workout/gym — called by Phaser GymScene on workout complete
+// POST /api/game/workout/gym — called by Phaser GymScene on workout complete.
+// XP is spent, not earned: this only ever deducts xpCost, and refuses the
+// workout outright once the pool is at 0.
 export async function POST(req: NextRequest) {
   const session = await auth();
   if (!session?.user?.id)
@@ -15,13 +24,11 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
   const {
     xpCost = 8,
-    xpEarned = 12,
     tokensEarned = 5,
     intensity = "MEDIUM",
     equipmentId = "unknown",
   } = body as {
     xpCost?: number;
-    xpEarned?: number;
     tokensEarned?: number;
     intensity?: string;
     equipmentId?: string;
@@ -34,7 +41,6 @@ export async function POST(req: NextRequest) {
       overflowXp: true,
       restUntil: true,
       offChainTokens: true,
-      totalXp: true,
       level: true,
     },
   });
@@ -49,45 +55,59 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Deduct XP cost (overflow first, then current)
-  let newOverflow = user.overflowXp;
-  let newCurrent  = user.currentXp;
-
-  const totalAvailable = newCurrent + newOverflow;
-  if (totalAvailable < xpCost) {
-    // Not enough XP but allow workout (free) — just don't award extra
-    // to avoid blocking the game
-  } else {
-    if (newOverflow >= xpCost) {
-      newOverflow -= xpCost;
-    } else {
-      const remainder = xpCost - newOverflow;
-      newOverflow = 0;
-      newCurrent = Math.max(0, newCurrent - remainder);
-    }
-  }
-
-  // Add XP reward — overflow if bar is full, capped at MAX_XP_ACCUMULATION total
-  const xpReward = applyXpReward(newCurrent, newOverflow, xpEarned);
-  newCurrent = xpReward.currentXp;
-  newOverflow = xpReward.overflowXp;
-  const actualXpEarned = xpReward.xpAdded;
-
-  // Rest if exhausted
-  const exhausted = newCurrent === 0 && newOverflow === 0;
-  const restUntil = exhausted ? new Date(Date.now() + REST_DURATION_MS) : null;
-
-  const tokenBigInt = BigInt(Math.max(0, Math.floor(tokensEarned)));
-  const totalXpUpdate = addTotalXp(user.totalXp, actualXpEarned);
-
   const [character, gymMembership] = await Promise.all([
     prisma.character.findFirst({ where: { userId, isActive: true } }),
     prisma.gymMember.findFirst({
       where: { userId },
       orderBy: { joinedAt: "desc" },
-      select: { gym: { select: { id: true, tier: true } } },
+      select: {
+        gym: {
+          select: {
+            id: true,
+            tier: true,
+            equipment: { select: { id: true, type: true, level: true } },
+          },
+        },
+      },
     }),
   ]);
+
+  // Cost and payout both come from the machine that was actually used, at the
+  // level the owner has upgraded it to — a better-equipped gym pays better,
+  // which is the whole point of tiering up. The client's figures are only a
+  // fallback for equipment the catalog does not know.
+  const installed = gymMembership?.gym.equipment.find((e) => e.type === equipmentId) ?? null;
+  const spec = equipmentSpec(installed?.type ?? equipmentId);
+  const equipmentLevel = installed?.level ?? 1;
+
+  const xpSpend = spec ? spec.xpCost : xpCost;
+  const tokenBigInt = BigInt(
+    Math.max(0, Math.floor(spec ? equipmentTokenYield(spec, equipmentLevel) : tokensEarned))
+  );
+
+  const totalAvailable = user.currentXp + user.overflowXp;
+  if (totalAvailable <= 0) {
+    return Response.json(
+      { error: "No XP left — rest to recover before working out.", currentXp: user.currentXp, overflowXp: user.overflowXp },
+      { status: 402 }
+    );
+  }
+  if (totalAvailable < xpSpend) {
+    return Response.json(
+      { error: "Not enough XP for this workout", currentXp: user.currentXp, overflowXp: user.overflowXp, xpCost: xpSpend },
+      { status: 402 }
+    );
+  }
+
+  const spent = spendXp(user.currentXp, user.overflowXp, xpSpend);
+  const newCurrent = spent.currentXp;
+  const newOverflow = spent.overflowXp;
+
+  // Rest if exhausted
+  const exhausted = newCurrent === 0 && newOverflow === 0;
+  const restUntil = exhausted ? new Date(Date.now() + REST_DURATION_MS) : null;
+
+  const durationMins = intensity === "HIGH" ? 45 : intensity === "LOW" ? 20 : 30;
 
   // Trainers at the player's gym earn a tier-scaled GYMFIT cut per player workout
   const trainers = gymMembership
@@ -98,14 +118,20 @@ export async function POST(req: NextRequest) {
     : [];
   const payMicro = gymMembership ? trainerPayMicroForTier(gymMembership.gym.tier) : 0n;
 
-  const [updatedUser, workout] = await prisma.$transaction(async (tx) => {
+  // Stat gains — in-game gym workouts are the main way stats climb toward the
+  // next level's floor, so they have to be applied here too (not just in the
+  // plan-based /api/game/workout route). Level-up is gated on stats AND XP.
+  const statGain = character
+    ? calculateStatGain(spec?.planType ?? "HYBRID", durationMins, intensity, 0.03)
+    : null;
+
+  const [updatedUser, updatedCharacter, workout] = await prisma.$transaction(async (tx) => {
     const updatedUser = await tx.user.update({
       where: { id: userId },
       data: {
         currentXp:      newCurrent,
         overflowXp:     newOverflow,
         offChainTokens: user.offChainTokens + tokenBigInt,
-        totalXp:        totalXpUpdate.totalXp,
         ...(restUntil ? { restUntil } : {}),
         lastXpRegenAt: new Date(),
       },
@@ -117,15 +143,28 @@ export async function POST(req: NextRequest) {
       },
     });
 
+    const updatedCharacter = character && statGain
+      ? await tx.character.update({
+          where: { id: character.id },
+          data: {
+            strength:   character.strength   + statGain.strength,
+            stamina:    character.stamina    + statGain.stamina,
+            discipline: character.discipline + statGain.discipline,
+            metabolism: character.metabolism + statGain.metabolism,
+          },
+          select: { strength: true, stamina: true, discipline: true, metabolism: true },
+        })
+      : null;
+
     const workout = await tx.workout.create({
       data: {
         userId,
         characterId:  character?.id,
         source:       "IN_GAME",
-        durationMins: intensity === "HIGH" ? 45 : intensity === "LOW" ? 20 : 30,
+        durationMins,
         intensity:    intensity as "LOW" | "MEDIUM" | "HIGH",
         adherencePct: 100,
-        xpEarned:       actualXpEarned,
+        xpEarned:       0, // workouts no longer earn XP, only spend it
         tokensEarned: tokenBigInt,
         fitnessBoost: 0.03,
       },
@@ -162,17 +201,22 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    return [updatedUser, workout] as const;
+    return [updatedUser, updatedCharacter, workout] as const;
   });
 
   return Response.json({
     success:     true,
-    xpEarned:     actualXpEarned,
+    xpSpent:      xpSpend,
     tokensEarned: tokenBigInt.toString(),
     currentXp:   updatedUser.currentXp,
     overflowXp:  updatedUser.overflowXp,
     exhausted,
     restUntil:   updatedUser.restUntil?.toISOString() ?? null,
     workoutId:   workout.id,
+    statGain,
+    stats:       updatedCharacter,
+    equipment: spec
+      ? { type: spec.type, name: spec.name, grade: spec.grade, level: equipmentLevel }
+      : null,
   });
 }

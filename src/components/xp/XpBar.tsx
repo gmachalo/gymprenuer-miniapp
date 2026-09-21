@@ -1,16 +1,18 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { MAX_XP_ACCUMULATION } from "@/lib/game/engine";
+import { maxXpForStage } from "@/lib/game/engine";
 
 interface XpBarProps {
   currentXp: number;        // 0–100
   overflowXp: number;       // extra XP above 100
   restUntil: string | null; // ISO datetime or null
   lastXpRegenAt?: string;   // ISO datetime for local countdown
+  transformationStage?: number; // determines the pool cap shown as "Total: X/Y"
 }
 
-export function XpBar({ currentXp, overflowXp, restUntil, lastXpRegenAt }: XpBarProps) {
+export function XpBar({ currentXp, overflowXp, restUntil, lastXpRegenAt, transformationStage = 0 }: XpBarProps) {
+  const maxXp = maxXpForStage(transformationStage);
   const [nextRegenSecs, setNextRegenSecs] = useState<number>(0);
   const isResting = restUntil ? new Date(restUntil) > new Date() : false;
   const [restSecsLeft, setRestSecsLeft] = useState(0);
@@ -131,7 +133,7 @@ export function XpBar({ currentXp, overflowXp, restUntil, lastXpRegenAt }: XpBar
       {/* Sub-row */}
       <div style={{ display: "flex", justifyContent: "space-between" }}>
         <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>
-          Total: {totalXp}/{MAX_XP_ACCUMULATION} XP
+          Total: {totalXp}/{maxXp} XP
         </span>
         {!isResting && currentXp < 100 && (
           <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>

@@ -7,14 +7,19 @@ interface Props {
   gymId: string;
   requiredLevel: number;
   playerLevel: number;
+  isPro: boolean;
+  activationCost: number;
+  playerXp: number;
 }
 
-export default function GymTrainerButton({ gymId, requiredLevel, playerLevel }: Props) {
+export default function GymTrainerButton({ gymId, requiredLevel, playerLevel, isPro, activationCost, playerXp }: Props) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const eligible = playerLevel >= requiredLevel;
+  const levelMet = playerLevel >= requiredLevel;
+  const xpMet = playerXp >= activationCost;
+  const eligible = levelMet && isPro && xpMet;
 
   const handleApply = async () => {
     setLoading(true);
@@ -42,10 +47,16 @@ export default function GymTrainerButton({ gymId, requiredLevel, playerLevel }: 
         disabled={loading || !eligible}
       >
         {loading
-          ? "Applying..."
+          ? "Activating..."
           : eligible
-          ? "🎓 Become a Trainer"
-          : `Need level ${requiredLevel} to train here (you're ${playerLevel})`}
+          ? `🎓 Activate Trainer Mode (${activationCost} XP)`
+          : !levelMet && !isPro
+          ? `Need level ${requiredLevel} + Pro (Advanced) stage to train here`
+          : !levelMet
+          ? `Need level ${requiredLevel} to train here (you're ${playerLevel})`
+          : !isPro
+          ? `Need to reach Pro (Advanced) stage to train here`
+          : `Need ${activationCost} XP to activate trainer mode (you have ${playerXp})`}
       </button>
       {error && (
         <p style={{ margin: "6px 0 0", fontSize: "12px", color: "#f87171" }}>⚠️ {error}</p>

@@ -16,7 +16,7 @@ export class BootScene extends Phaser.Scene {
     const barGlow = this.add.rectangle(cx, cy, 320, 8, 0x6c47ff, 0.1).setDepth(99);
     const bar = this.add.rectangle(cx - 160, cy, 0, 8, 0x6c47ff, 1).setOrigin(0, 0.5).setDepth(101);
     const barSheen = this.add.rectangle(cx - 160, cy - 2, 0, 3, 0xa78bfa, 0.6).setOrigin(0, 0.5).setDepth(102);
-    this.add.text(cx, cy - 28, "GYM TYCOON", {
+    this.add.text(cx, cy - 28, "GYMPRENUER", {
       fontFamily: "Inter,sans-serif", fontSize: "11px", color: "#6c47ff",
       letterSpacing: 6,
     }).setOrigin(0.5).setDepth(101);
@@ -278,6 +278,110 @@ export class BootScene extends Phaser.Scene {
     g.fillStyle(0x333333, 1);
     g.fillRect(18, 3, 6, 6); g.fillRect(40, 3, 6, 6);
     g.generateTexture("eq_pullup", 64, 58);
+
+    // â”€â”€ HOME RECOVERY PROPS (Bed / Chair / Fridge) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    // Bed â€” pillow + folded blanket on top face
+    g.clear();
+    drawEquipmentBase(0x4a3e28, 0x2e2618, 0xf59e0b);
+    g.fillStyle(0xffffff, 0.92);
+    g.fillRoundedRect(12, 12, 16, 10, 3);
+    g.fillStyle(0xe8e8f0, 0.5);
+    g.fillRoundedRect(13, 13, 14, 4, 2);
+    g.fillStyle(0x6c47ff, 0.85);
+    g.fillRoundedRect(30, 10, 22, 14, 3);
+    g.fillStyle(0xa78bfa, 0.5);
+    g.fillRect(30, 10, 22, 3);
+    g.generateTexture("prop_bed", 64, 58);
+
+    // Chair â€” seat + backrest
+    g.clear();
+    drawEquipmentBase(0x7a4a20, 0x4a2c10, 0xfbbf24);
+    g.fillStyle(0x8a5a2a, 1);
+    g.fillRoundedRect(22, 2, 20, 16, 3);
+    g.fillStyle(0xa0703a, 0.4);
+    g.fillRect(23, 3, 18, 4);
+    g.generateTexture("prop_chair", 64, 58);
+
+    // Fridge â€” tall door with handle + light accent
+    g.clear();
+    drawEquipmentBase(0xd8d8e0, 0x8a8a98, 0x4cc9f0);
+    g.fillStyle(0xc0c0cc, 1);
+    g.fillRoundedRect(20, 2, 24, 26, 2);
+    g.lineStyle(1, 0x9a9aa8, 0.8);
+    g.lineBetween(20, 14, 44, 14);
+    g.fillStyle(0x555560, 1);
+    g.fillRoundedRect(39, 5, 3, 7, 1);
+    g.fillRoundedRect(39, 17, 3, 7, 1);
+    g.generateTexture("prop_fridge", 64, 58);
+
+    // Shower Area - tiled stall with head and falling water
+    g.clear();
+    drawEquipmentBase(0x3a4a55, 0x22303a, 0x8ecae6);
+    g.fillStyle(0x9fb8c4, 1);
+    g.fillRoundedRect(22, 2, 20, 6, 2);          // shower head
+    g.fillStyle(0x5a7a8a, 1);
+    g.fillRect(31, 8, 2, 4);                      // riser
+    g.fillStyle(0x8ecae6, 0.55);
+    for (let i = 0; i < 5; i++) g.fillRect(24 + i * 4, 12, 2, 14); // water
+    g.fillStyle(0xbfe3f0, 0.35);
+    g.fillEllipse(32, 28, 26, 7);                 // splash pool
+    g.generateTexture("prop_shower", 64, 58);
+
+    // Locker Room - bank of three doors with handles
+    g.clear();
+    drawEquipmentBase(0x6a7480, 0x3d444d, 0x8d99ae);
+    g.fillStyle(0x8d99ae, 1);
+    g.fillRoundedRect(16, 2, 32, 26, 2);
+    g.lineStyle(1, 0x5a6472, 0.9);
+    g.lineBetween(27, 2, 27, 28);
+    g.lineBetween(38, 2, 38, 28);
+    g.fillStyle(0x39404a, 1);
+    g.fillRect(24, 13, 2, 5);
+    g.fillRect(35, 13, 2, 5);
+    g.fillRect(45, 13, 2, 5);
+    g.fillStyle(0xc9d3de, 0.35);
+    g.fillRect(16, 2, 32, 3);
+    g.generateTexture("prop_locker", 64, 58);
+
+    // Yoga Studio - rolled mats against a screened partition
+    g.clear();
+    drawEquipmentBase(0x4a3a60, 0x2c2340, 0xa78bfa);
+    g.fillStyle(0x2f2745, 0.9);
+    g.fillRoundedRect(16, 2, 32, 20, 3);          // partition
+    g.fillStyle(0xa78bfa, 0.45);
+    g.fillRect(18, 5, 28, 2);
+    g.fillRect(18, 11, 28, 2);
+    g.fillStyle(0xc4b5fd, 1);
+    g.fillRoundedRect(20, 22, 10, 5, 2);          // rolled mats
+    g.fillRoundedRect(33, 22, 10, 5, 2);
+    g.generateTexture("prop_yoga_room", 64, 58);
+
+    // Sauna - slatted cedar cabin with a heat glow
+    g.clear();
+    drawEquipmentBase(0x6b4226, 0x40260f, 0xff6b35);
+    g.fillStyle(0x8a5a33, 1);
+    g.fillRoundedRect(16, 2, 32, 26, 2);
+    g.lineStyle(1, 0x5c3a1e, 0.85);
+    for (let i = 1; i < 5; i++) g.lineBetween(16, 2 + i * 5, 48, 2 + i * 5); // slats
+    g.fillStyle(0xff6b35, 0.5);
+    g.fillCircle(32, 20, 6);                      // stove glow
+    g.fillStyle(0xffd7a3, 0.6);
+    g.fillCircle(32, 20, 3);
+    g.generateTexture("prop_sauna", 64, 58);
+
+    // Pool Area - tiled surround with lane markings
+    g.clear();
+    drawEquipmentBase(0x1f4f63, 0x123542, 0x00b4d8);
+    g.fillStyle(0x00b4d8, 0.75);
+    g.fillRoundedRect(14, 4, 36, 22, 4);          // water
+    g.fillStyle(0x90e0ef, 0.5);
+    g.fillRect(18, 9, 28, 2);                     // lane lines
+    g.fillRect(18, 15, 28, 2);
+    g.fillRect(18, 21, 28, 2);
+    g.lineStyle(1, 0xcaf0f8, 0.55);
+    g.strokeRoundedRect(14, 4, 36, 22, 4);        // pool edge
+    g.generateTexture("prop_pool", 64, 58);
 
     // â”€â”€ PREMIUM CHARACTER SPRITES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const drawCharacter = (

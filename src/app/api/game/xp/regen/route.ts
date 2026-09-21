@@ -11,17 +11,40 @@ export async function PATCH(_req: NextRequest) {
     if (!session?.user?.id)
       return Response.json({ error: "Unauthorized" }, { status: 401 });
 
-    const user = await prisma.user.findUnique({
-      where: { id: session.user.id },
-      select: {
-        currentXp: true,
-        overflowXp: true,
-        lastXpRegenAt: true,
-        restUntil: true,
-      },
-    });
+    const [user, character] = await Promise.all([
+      prisma.user.findUnique({
+        where: { id: session.user.id },
+        select: {
+          currentXp: true,
+          overflowXp: true,
+          lastXpRegenAt: true,
+          restUntil: true,
+        },
+      }),
+      prisma.character.findFirst({
+        where: { userId: session.user.id, isActive: true },
+        select: {
+          transformationStage: true,
+          strength: true,
+          stamina: true,
+          discipline: true,
+          metabolism: true,
+        },
+      }),
+    ]);
 
     if (!user) return Response.json({ error: "User not found" }, { status: 404 });
+
+    // Stats ride along on the regen poll so the HUD's level-up gate (stats AND
+    // XP) reflects gains made this session without a page reload.
+    const stats = character
+      ? {
+          strength: character.strength,
+          stamina: character.stamina,
+          discipline: character.discipline,
+          metabolism: character.metabolism,
+        }
+      : null;
 
     const now = new Date();
     const minutesSinceRegen =
@@ -37,20 +60,29 @@ export async function PATCH(_req: NextRequest) {
         overflowXp: user.overflowXp,
         restUntil: user.restUntil?.toISOString() ?? null,
         xpAdded: 0,
+        stats,
       });
     }
 
-    const xpUpdate = applyXpReward(user.currentXp, user.overflowXp, xpToAdd);
+    const xpUpdate = applyXpReward(user.currentXp, user.overflowXp, xpToAdd, character?.transformationStage ?? 0);
     const newCurrentXp = xpUpdate.currentXp;
     const newOverflowXp = xpUpdate.overflowXp;
     const xpAdded = xpUpdate.xpAdded;
 
+    // Pool is at the stage cap, so there is nothing to add — but the clock still
+    // has to advance. Leaving it parked lets elapsed time bank up while full, and
+    // the next spend is then refunded in full by the following tick.
     if (xpAdded === 0) {
+      await prisma.user.update({
+        where: { id: session.user.id },
+        data: { lastXpRegenAt: now },
+      });
       return Response.json({
         currentXp: user.currentXp,
         overflowXp: user.overflowXp,
         restUntil: user.restUntil?.toISOString() ?? null,
         xpAdded: 0,
+        stats,
       });
     }
 
@@ -74,6 +106,7 @@ export async function PATCH(_req: NextRequest) {
       overflowXp: updated.overflowXp,
       restUntil: updated.restUntil?.toISOString() ?? null,
       xpAdded,
+      stats,
     });
   } catch (err: unknown) {
     const code = (err as { code?: string }).code;

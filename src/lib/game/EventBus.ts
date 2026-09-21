@@ -25,7 +25,7 @@ export type GameEvents = {
 
   // Workouts
   "workout:started":           { equipmentId: string; intensity: "LOW" | "MEDIUM" | "HIGH" };
-  "workout:complete":          { xpEarned: number; tokensEarned: number; equipmentId: string };
+  "workout:complete":          { xpCost: number; tokensEarned: number; equipmentId: string };
   "workout:quit":              { equipmentId: string };
   "workout:firstperson_toggle": { enabled: boolean };
 

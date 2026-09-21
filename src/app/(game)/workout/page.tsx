@@ -48,9 +48,10 @@ export default function WorkoutPage() {
   const [intensity, setIntensity] = useState<Intensity>("MEDIUM");
   const [elapsed, setElapsed] = useState(0);
   const [result, setResult] = useState<{
-    reward: { totalTokens: string; totalXp: number; fitnessBoostApplied: number; cappedByDailyLimit: boolean };
+    reward: { totalTokens: string; fitnessBoostApplied: number; cappedByDailyLimit: boolean };
     statGain: Record<string, number> | null;
     newStreak: number;
+    xpCost: number;
   } | null>(null);
   const [loading, setLoading] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -332,8 +333,8 @@ export default function WorkoutPage() {
           </div>
 
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "10px" }}>
-            <span style={{ color: "var(--text-secondary)", fontSize: "14px" }}>XP Gained</span>
-            <span style={{ fontWeight: 700 }}>+{result.reward.totalXp} XP</span>
+            <span style={{ color: "var(--text-secondary)", fontSize: "14px" }}>XP Spent</span>
+            <span style={{ fontWeight: 700, color: "#f87171" }}>-{result.xpCost} XP</span>
           </div>
 
           {result.reward.fitnessBoostApplied > 0 && (

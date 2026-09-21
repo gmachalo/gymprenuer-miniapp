@@ -2,6 +2,12 @@ import { NextRequest } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/db/prisma";
 import { GYM_TIERS } from "@/app/api/game/gyms/[id]/upgrade/route";
+import { equipmentSpec, equipmentUpgradeCost, equipmentGradeForGymTier } from "@/lib/game/engine";
+
+// A new gym opens as a tier-1 Starter Den with a basic grade-2 floor — one
+// grade above what the owner could already train on at home. Everything beyond
+// this the owner buys with GYMFIT.
+const STARTER_EQUIPMENT = ["bench", "treadmill"];
 
 // GET /api/game/gyms — list all gyms
 export async function GET(req: NextRequest) {
@@ -32,10 +38,9 @@ export async function POST(req: NextRequest) {
 
   const userId = session.user.id;
   const body = await req.json();
-  const { name, description, monthlyFee } = body as {
+  const { name, description } = body as {
     name: string;
     description?: string;
-    monthlyFee?: number;
   };
 
   if (!name || name.trim().length < 3)
@@ -77,9 +82,29 @@ export async function POST(req: NextRequest) {
         description,
         type: "PLAYER",
         ownerId: userId,
-        monthlyFee: monthlyFee ? BigInt(monthlyFee) : BigInt(100),
+        tier: 1, // every gym opens at tier 1 and is built up from there
+        monthlyFee: GYM_TIERS[0].monthlyFee,
+        metadata: { tier: 1, tierName: GYM_TIERS[0].name },
       },
     });
+
+    // Seed the starter floor so a brand-new gym is already worth training at.
+    for (const type of STARTER_EQUIPMENT) {
+      const spec = equipmentSpec(type);
+      if (!spec) continue;
+      await tx.equipment.create({
+        data: {
+          gymId: g.id,
+          name: spec.name,
+          type: spec.type,
+          level: 1,
+          purchaseCost: BigInt(spec.purchaseCost),
+          upgradeCost: equipmentUpgradeCost(spec, 1),
+          capacity: spec.capacity,
+          statBonus: { planType: spec.planType, intensity: spec.intensity, grade: spec.grade },
+        },
+      });
+    }
 
     // Auto-join as owner
     await tx.gymMember.create({
@@ -95,5 +120,12 @@ export async function POST(req: NextRequest) {
     return g;
   });
 
-  return Response.json({ gym }, { status: 201 });
+  return Response.json(
+    {
+      gym,
+      // Tier 1 hosts grade-2 equipment — one grade above training at home.
+      equipmentGrade: equipmentGradeForGymTier(gym.tier),
+    },
+    { status: 201 }
+  );
 }

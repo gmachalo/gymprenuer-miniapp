@@ -4,6 +4,9 @@ import { redirect } from "next/navigation";
 import { formatTokens } from "@/lib/utils";
 import ProfileModeToggle from "@/components/profile/ProfileModeToggle";
 import FitnessSyncButton from "@/components/profile/FitnessSyncButton";
+import FitnessConnectCard from "@/components/profile/FitnessConnectCard";
+import { statRequiredForLevel } from "@/lib/game/engine";
+import { Suspense } from "react";
 import { signOut } from "@/auth";
 
 const BODY_TYPE_EMOJI: Record<string, string> = {
@@ -29,6 +32,9 @@ export default async function ProfilePage() {
   if (!user) redirect("/login");
 
   const totalWorkouts = await prisma.workout.count({ where: { userId } });
+
+  // Every stat must clear this before the next level unlocks.
+  const requiredStat = statRequiredForLevel(user.level);
 
   return (
     <div>
@@ -130,7 +136,10 @@ export default async function ProfilePage() {
                   ].map((s) => (
                     <div key={s.k} style={{ display: "flex", gap: "4px", alignItems: "center", fontSize: "13px" }}>
                       <span style={{ color: s.c, fontWeight: 700 }}>{s.k}</span>
-                      <span style={{ color: "var(--text-secondary)" }}>{s.v}</span>
+                      <span style={{ color: s.v >= requiredStat ? "var(--text-primary)" : "var(--text-secondary)" }}>
+                        {s.v}
+                      </span>
+                      <span style={{ color: "var(--text-muted)", fontSize: "11px" }}>/{requiredStat}</span>
                     </div>
                   ))}
                 </div>
@@ -139,9 +148,17 @@ export default async function ProfilePage() {
           </div>
         )}
 
+        {/* Real-world workout app link — drives character stats */}
+        <Suspense fallback={null}>
+          <FitnessConnectCard requiredStat={requiredStat} />
+        </Suspense>
+
         {/* Fitness Sync */}
         <div className="card" style={{ marginBottom: "16px" }}>
-          <p className="section-title" style={{ margin: "0 0 12px" }}>🔗 Fitness API Sync</p>
+          <p className="section-title" style={{ margin: "0 0 4px" }}>⚡ Daily Token Boost</p>
+          <p style={{ margin: "0 0 12px", fontSize: "13px", color: "var(--text-secondary)" }}>
+            Separate from stats: today&apos;s activity also multiplies the GYMFIT your next workout pays out.
+          </p>
           {latestSync && (
             <div style={{ marginBottom: "12px", fontSize: "13px", color: "var(--text-secondary)" }}>
               Last sync: {new Date(latestSync.syncDate).toLocaleDateString()} ·{" "}

@@ -430,11 +430,13 @@ export class WorkoutScene extends Phaser.Scene {
   }
 
   private exitScene(success: boolean) {
+    // NOTE: this scene is never actually launched by GymScene/HomeScene today
+    // (dead code) — kept type-correct for whenever it's wired up. XP is no
+    // longer earned from workouts, so there's no reward-based bonus here.
     if (success) {
-      const bonus = this.combo >= 5 ? Math.ceil(this.xpReward * 0.2) : 0;
       EventBus.emit("workout:complete", {
         equipmentId:  this.equipmentId,
-        xpEarned:     this.xpReward + bonus,
+        xpCost:       0,
         tokensEarned: this.tokenReward,
       });
     }

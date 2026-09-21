@@ -32,7 +32,17 @@ export default async function DashboardPage() {
       }),
       prisma.gymMember.findFirst({
         where: { userId },
-        include: { gym: true },
+        include: {
+          gym: {
+            include: {
+              equipment: {
+                select: { type: true, name: true, level: true },
+                orderBy: { purchasedAt: "asc" },
+              },
+              amenities: { select: { type: true }, orderBy: { installedAt: "asc" } },
+            },
+          },
+        },
         orderBy: { joinedAt: "desc" },
       }),
       prisma.fitnessSync.findFirst({
@@ -132,6 +142,8 @@ export default async function DashboardPage() {
               initialLastRegenAt={user.lastXpRegenAt.toISOString()}
               gymName={gymMembership?.gym.name}
               hasGym={!!gymMembership}
+              gymEquipment={gymMembership?.gym.equipment ?? []}
+              gymAmenities={(gymMembership?.gym.amenities ?? []).map((a) => a.type)}
             />
           </div>
         ) : (

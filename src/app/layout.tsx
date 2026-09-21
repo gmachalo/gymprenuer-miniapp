@@ -2,12 +2,12 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Gym Tycoon — Train. Build. Earn.",
+  title: "GymPrenuer — Train. Build. Earn.",
   description:
     "The Web3 fitness simulation game. Build your character, own a gym, and earn GYMFIT tokens on Base.",
   manifest: "/manifest.json",
   openGraph: {
-    title: "Gym Tycoon",
+    title: "GymPrenuer",
     description: "Train. Build. Earn. The Web3 gym simulation on Base.",
     type: "website",
   },

@@ -1,4 +1,4 @@
-# Quick Start - 5 Minutes to Running Gym Tycoon
+# Quick Start - 5 Minutes to Running GymPrenuer
 
 ## You're seeing: `P1013: The provided database string is invalid`
 

@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/db/prisma";
+import { startingStatsFor } from "@/lib/game/engine";
 
 // GET /api/game/character — Get active character
 export async function GET(_req: NextRequest) {
@@ -22,7 +23,12 @@ export async function POST(req: NextRequest) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await req.json();
-  const { name, bodyType } = body as { name: string; bodyType: "SKINNY" | "AVERAGE" | "OVERWEIGHT" };
+  const { name, bodyType, planTypes, workoutEnv } = body as {
+    name: string;
+    bodyType: "SKINNY" | "AVERAGE" | "OVERWEIGHT";
+    planTypes?: string[];
+    workoutEnv?: string | null;
+  };
 
   if (!name || !bodyType)
     return Response.json({ error: "name and bodyType are required" }, { status: 400 });
@@ -37,13 +43,14 @@ export async function POST(req: NextRequest) {
     data: { isActive: false },
   });
 
-  // Random starting stats based on body type
-  const baseStats: Record<string, Record<string, number>> = {
-    SKINNY:     { strength: 6,  stamina: 12, discipline: 10, metabolism: 14 },
-    AVERAGE:    { strength: 10, stamina: 10, discipline: 10, metabolism: 10 },
-    OVERWEIGHT: { strength: 14, stamina: 6,  discipline: 8,  metabolism: 6  },
-  };
-  const stats = baseStats[bodyType];
+  // Opening stats come from every choice made at signup — body type, the goals
+  // picked, and where the player trains — and all of them sit below the level-1
+  // stat floor, so the first level-up has to be trained for.
+  const stats = startingStatsFor({
+    bodyType,
+    planTypes: Array.isArray(planTypes) ? planTypes : [],
+    workoutEnv: workoutEnv ?? null,
+  });
 
   const character = await prisma.character.create({
     data: {

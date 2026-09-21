@@ -42,7 +42,7 @@ contract GymOwnership is ERC721URIStorage, Ownable2Step, ReentrancyGuard {
     event RevenueReleased(uint256 indexed gymId, address indexed recipient, uint256 amount);
 
     constructor(address gymFitToken_, address initialOwner)
-        ERC721("Gym Tycoon Ownership", "GYMOWN")
+        ERC721("GymPrenuer Ownership", "GYMOWN")
         Ownable(initialOwner)
     {
         gymFitToken = IERC20(gymFitToken_);

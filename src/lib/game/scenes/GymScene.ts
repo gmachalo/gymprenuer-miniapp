@@ -1,23 +1,114 @@
 import Phaser from "phaser";
 import { Player } from "@/lib/game/entities/Player";
 import { PlayerController } from "@/lib/game/systems/PlayerController";
-import { Equipment } from "@/lib/game/entities/Equipment";
 import { NpcManager } from "@/lib/game/systems/NpcManager";
 import { IncomeSystem } from "@/lib/game/systems/IncomeSystem";
 import { EventBus } from "@/lib/game/EventBus";
+import { Equipment } from "@/lib/game/entities/Equipment";
+import { RecoveryProp } from "@/lib/game/entities/RecoveryProp";
+import {
+  equipmentAvailableForTier,
+  equipmentSpec,
+  equipmentTokenYield,
+  amenitySpec,
+  standardAmenities,
+} from "@/lib/game/engine";
 
-const GYM_EQUIPMENT: Array<{
-  id: string; name: string; tex: string;
-  x: number; y: number;
-  xpCost: number; xpReward: number; tokens: number;
-  intensity: "LOW" | "MEDIUM" | "HIGH";
-}> = [
-  { id: "bench",     name: "Bench Press", tex: "eq_bench",     x: 140, y: 200, xpCost: 10, xpReward: 15, tokens: 8,  intensity: "HIGH"   },
-  { id: "treadmill", name: "Treadmill",   tex: "eq_treadmill", x: 280, y: 200, xpCost: 8,  xpReward: 12, tokens: 5,  intensity: "MEDIUM" },
-  { id: "squat",     name: "Squat Rack",  tex: "eq_squat",     x: 420, y: 200, xpCost: 12, xpReward: 18, tokens: 10, intensity: "HIGH"   },
-  { id: "cable",     name: "Cable Row",   tex: "eq_cable",     x: 140, y: 340, xpCost: 8,  xpReward: 12, tokens: 6,  intensity: "MEDIUM" },
-  { id: "bike",      name: "Spin Bike",   tex: "eq_bike",      x: 280, y: 340, xpCost: 6,  xpReward: 10, tokens: 4,  intensity: "LOW"    },
+// The floor is whatever the gym actually owns (passed in from the server). A
+// gym with nothing installed falls back to the tier-1 basics so the scene is
+// never empty.
+export interface GymEquipmentInit {
+  id: string;
+  type: string;
+  name: string;
+  level: number;
+  grade: number;
+  tokens: number;
+}
+
+// Equipment is laid out on a 4-wide grid across the weight and cardio zones.
+// Four rows of four covers the 16 pieces a tier-5 gym can hold, and the last
+// row still sits clear of the player spawn and the collection point.
+const EQUIPMENT_ORIGIN = { x: 95, y: 150 };
+const EQUIPMENT_SPACING = { x: 100, y: 105 };
+const EQUIPMENT_PER_ROW = 4;
+const EQUIPMENT_MAX_ROWS = 4;
+
+function equipmentSlot(index: number): { x: number; y: number } {
+  const row = Math.floor(index / EQUIPMENT_PER_ROW);
+  return {
+    x: EQUIPMENT_ORIGIN.x + (index % EQUIPMENT_PER_ROW) * EQUIPMENT_SPACING.x,
+    y: EQUIPMENT_ORIGIN.y + Math.min(row, EQUIPMENT_MAX_ROWS - 1) * EQUIPMENT_SPACING.y,
+  };
+}
+
+/** Resolve the pieces to render — the gym's own floor, or the tier-1 default. */
+function resolveGymEquipment(owned?: GymEquipmentInit[]) {
+  const known = (owned ?? []).filter((piece) => !!equipmentSpec(piece.type));
+
+  const pieces =
+    known.length > 0
+      ? known
+      : equipmentAvailableForTier(1).map((spec) => ({
+          id: spec.type,
+          type: spec.type,
+          name: spec.name,
+          level: 1,
+          grade: spec.grade,
+          tokens: equipmentTokenYield(spec, 1),
+        }));
+
+  // Only what fits on the floor is placed; beyond that pieces would stack.
+  return pieces.slice(0, EQUIPMENT_PER_ROW * EQUIPMENT_MAX_ROWS).map((piece, index) => {
+    const spec = equipmentSpec(piece.type)!;
+    return {
+      ...equipmentSlot(index),
+      id: piece.type,
+      name: piece.name || spec.name,
+      tex: spec.tex,
+      xpCost: spec.xpCost,
+      tokens: piece.tokens || equipmentTokenYield(spec, piece.level),
+      intensity: spec.intensity,
+      level: piece.level,
+    };
+  });
+}
+
+/** Amenities ring the equipment grid: a band along the top, another below it. */
+const AMENITY_SLOTS: Array<{ x: number; y: number }> = [
+  { x: 55, y: 58 }, { x: 145, y: 58 }, { x: 235, y: 58 }, { x: 325, y: 58 }, { x: 415, y: 58 },
+  { x: 55, y: 535 }, { x: 145, y: 535 }, { x: 235, y: 535 }, { x: 325, y: 535 }, { x: 415, y: 535 },
 ];
+
+/**
+ * Every gym shows its standard fittings — the water dispenser and shower — plus
+ * whatever the owner has installed. Lockers and other zero-XP facilities are
+ * placed on the floor but are not interactable.
+ */
+function resolveGymAmenities(installed?: string[]) {
+  const types = [
+    ...standardAmenities().map((spec) => spec.type),
+    ...(installed ?? []).filter((type) => {
+      const spec = amenitySpec(type);
+      return !!spec && !spec.standard;
+    }),
+  ];
+
+  return types.slice(0, AMENITY_SLOTS.length).map((type, index) => {
+    const spec = amenitySpec(type)!;
+    return {
+      ...AMENITY_SLOTS[index],
+      id: spec.type,
+      label: spec.name,
+      verb: spec.verb,
+      tex: spec.tex,
+      xpGain: spec.xpGain,
+      cooldownMs: spec.cooldownMs,
+      accentColor: spec.accentColor,
+      usable: spec.xpGain > 0,
+    };
+  });
+}
 
 export interface GymSceneInitData {
   playerBodyType?: "SKINNY" | "AVERAGE" | "OVERWEIGHT";
@@ -26,17 +117,25 @@ export interface GymSceneInitData {
   currentXp?: number;
   overflowXp?: number;
   gymReputation?: number;
+  gymTier?: number;
+  /** The equipment actually installed at the player's gym. */
+  gymEquipment?: GymEquipmentInit[];
+  /** Amenity catalog keys the player's gym has bought (standard fittings are implicit). */
+  gymAmenities?: string[];
 }
 
 export class GymScene extends Phaser.Scene {
   private player!: Player;
   private controller!: PlayerController;
   private equipment: Equipment[] = [];
+  private amenities: RecoveryProp[] = [];
   private npcManager!: NpcManager;
   private incomeSystem!: IncomeSystem;
   private camera!: Phaser.Cameras.Scene2D.Camera;
   private activeEquipment: Equipment | null = null;
   private initData: GymSceneInitData = {};
+  // Guards shutdown() against running twice when both SHUTDOWN and DESTROY fire.
+  private tornDown = false;
 
   // Bound EventBus handler references — kept so shutdown() can remove exactly
   // these listeners (EventBus.off(type) with no handler clears ALL listeners
@@ -51,10 +150,10 @@ export class GymScene extends Phaser.Scene {
     this.tweens.add({ targets: this.cashGlow, fillAlpha: 0.5, duration: 300, yoyo: true });
   };
 
-  private onWorkoutComplete = ({ xpEarned, tokensEarned, equipmentId }: { xpEarned: number; tokensEarned: number; equipmentId: string }) => {
+  private onWorkoutComplete = ({ xpCost, tokensEarned, equipmentId }: { xpCost: number; tokensEarned: number; equipmentId: string }) => {
     const eq = this.equipment.find((e) => e.equipId === equipmentId);
     if (eq) {
-      this.incomeSystem.spawnXpReward(eq.x, eq.y - 40, xpEarned);
+      this.incomeSystem.spawnXpCost(eq.x, eq.y - 40, xpCost);
       this.incomeSystem.spawnTokenReward(eq.x + 20, eq.y - 20, tokensEarned);
       // Camera shake on completion
       this.camera.shake(120, 0.004);
@@ -115,6 +214,7 @@ export class GymScene extends Phaser.Scene {
     // from every previous session, including ones Phaser has since destroyed
     // (accessing a destroyed GameObject's `.scene` throws).
     this.equipment = [];
+    this.amenities = [];
     this.ambientLights = [];
     this.activeEquipment = null;
 
@@ -129,22 +229,40 @@ export class GymScene extends Phaser.Scene {
     this.addGymProps(W, H);
 
     // ── Zone labels ───────────────────────────────────────────────────────────
-    this.addZoneLabel("⚡ WEIGHT ZONE", 260, 118);
-    this.addZoneLabel("🏃 CARDIO ZONE", 220, 285);
-    this.addZoneLabel("🧾 RECEPTION", 60, 435);
+    // Placed in the gaps between equipment rows (see equipmentSlot) so a full
+    // tier-5 floor does not print machines over the zone names.
+    this.addZoneLabel("⚡ WEIGHT ZONE", 260, 110);
+    this.addZoneLabel("🏃 CARDIO ZONE", 220, 205);
+    this.addZoneLabel("🧾 RECEPTION", 60, 620);
 
     // ── Equipment ─────────────────────────────────────────────────────────────
-    GYM_EQUIPMENT.forEach((cfg) => {
+    resolveGymEquipment(this.initData.gymEquipment).forEach((cfg) => {
       const eq = new Equipment({
         scene: this,
         x: cfg.x, y: cfg.y,
         id: cfg.id, name: cfg.name,
         textureKey: cfg.tex,
-        xpCost: cfg.xpCost, xpReward: cfg.xpReward,
+        xpCost: cfg.xpCost,
         tokenReward: cfg.tokens,
         intensity: cfg.intensity,
+        level: cfg.level,
       });
       this.equipment.push(eq);
+    });
+
+    // ── Amenities ─────────────────────────────────────────────────────────────
+    resolveGymAmenities(this.initData.gymAmenities).forEach((cfg) => {
+      const prop = new RecoveryProp({
+        scene: this,
+        x: cfg.x, y: cfg.y,
+        id: cfg.id,
+        label: cfg.label,
+        verb: cfg.usable ? cfg.verb : "Members only",
+        textureKey: cfg.tex,
+        xpGain: cfg.xpGain,
+        accentColor: cfg.accentColor,
+      });
+      this.amenities.push(prop);
     });
 
     // ── Cash collection point ──────────────────────────────────────────────────
@@ -207,6 +325,16 @@ export class GymScene extends Phaser.Scene {
     );
 
     // ── EventBus listeners ────────────────────────────────────────────────────
+    // Detach first: teardown paths that skip SHUTDOWN (a game.destroy() from a
+    // React unmount or an HMR reload) leave the previous registration in place,
+    // and mitt happily stores the same handler twice — which would double every
+    // NPC payout. off() on an unregistered handler is a no-op, so this is safe
+    // on the first create() too.
+    EventBus.off("npc:paid", this.onNpcPaid);
+    EventBus.off("workout:complete", this.onWorkoutComplete);
+    EventBus.off("scene:switch", this.onSceneSwitch);
+    EventBus.off("hud:quit_workout", this.onQuitWorkout);
+
     EventBus.on("npc:paid", this.onNpcPaid);
     EventBus.on("workout:complete", this.onWorkoutComplete);
     EventBus.on("scene:switch", this.onSceneSwitch);
@@ -217,9 +345,14 @@ export class GymScene extends Phaser.Scene {
     EventBus.emit("scene:ready", { name: "GymScene" });
 
     // create() re-runs every time this scene is started, so the EventBus
-    // listeners above must be torn down on shutdown or they pile up and
-    // keep firing against this now-destroyed scene's game objects.
+    // listeners above must be torn down or they pile up and keep firing against
+    // this now-destroyed scene's game objects. Both events are wired because
+    // they cover different paths: a scene switch emits SHUTDOWN, while the
+    // game.destroy(true) on React unmount emits only DESTROY. shutdown() is
+    // idempotent, so it is fine when both fire.
+    this.tornDown = false;
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.shutdown, this);
+    this.events.once(Phaser.Scenes.Events.DESTROY, this.shutdown, this);
   }
 
   // ── Parallax city background ────────────────────────────────────────────────
@@ -322,7 +455,7 @@ export class GymScene extends Phaser.Scene {
     // ── Neon sign above entrance ───────────────────────────────────────────
     const signX = W / 2, signY = 32;
     this.add.image(signX, signY, "prop_sign_bg").setOrigin(0.5).setDepth(3);
-    this.neonSignText = this.add.text(signX, signY, "💪 GYM TYCOON", {
+    this.neonSignText = this.add.text(signX, signY, "💪 GYMPRENUER", {
       fontFamily: "Inter, sans-serif", fontSize: "11px", fontStyle: "bold",
       color: "#a78bfa", letterSpacing: 3,
     }).setOrigin(0.5).setDepth(4);
@@ -462,6 +595,42 @@ export class GymScene extends Phaser.Scene {
   }
 
   // ── Zone label ─────────────────────────────────────────────────────────────
+  /**
+   * Use a gym amenity — a drink, a shower, a spell in the sauna. XP comes back
+   * into the pool, on a cooldown the server enforces; the local activate() call
+   * is an optimistic lock so a double-tap cannot fire it twice.
+   */
+  private async useAmenity(prop: RecoveryProp) {
+    if (!prop.isReady()) return;
+    const spec = amenitySpec(prop.propId);
+    if (!spec || spec.xpGain <= 0) return;
+
+    prop.activate(spec.cooldownMs);
+
+    try {
+      const res = await fetch("/api/game/gym/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amenity: prop.propId }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        this.incomeSystem.spawnXpGain(prop.x, prop.y - 40, data.xpGained);
+        prop.activate(data.cooldownMs);
+        EventBus.emit("player:xp_changed", {
+          currentXp: data.currentXp,
+          overflowXp: data.overflowXp,
+          restUntil: data.restUntil ?? null,
+        });
+      } else {
+        prop.activate(0); // not actually on cooldown — let the player retry
+        this.incomeSystem.spawnReward(prop.x, prop.y - 40, data.error ?? "Can't use that yet", "#f87171");
+      }
+    } catch {
+      prop.activate(0);
+    }
+  }
+
   private addZoneLabel(text: string, x: number, y: number) {
     this.add.text(x, y, text, {
       fontFamily: "Inter, sans-serif",
@@ -481,6 +650,14 @@ export class GymScene extends Phaser.Scene {
         return;
       }
     }
+    for (const prop of this.amenities) {
+      const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, prop.x, prop.y);
+      if (dist < 70 && prop.xpGain > 0 && prop.isReady()) {
+        this.useAmenity(prop);
+        return;
+      }
+    }
+
     const cashDist = Phaser.Math.Distance.Between(
       this.player.x, this.player.y,
       this.cashPoint.x, this.cashPoint.y
@@ -537,6 +714,10 @@ export class GymScene extends Phaser.Scene {
       const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, eq.x, eq.y);
       eq.showPrompt(dist < 70 && !eq.isOccupied);
     }
+    for (const prop of this.amenities) {
+      const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, prop.x, prop.y);
+      prop.showPrompt(dist < 70 && prop.xpGain > 0);
+    }
 
     // NPCs
     this.npcManager.update(delta);
@@ -590,6 +771,8 @@ export class GymScene extends Phaser.Scene {
   }
 
   shutdown() {
+    if (this.tornDown) return;
+    this.tornDown = true;
     EventBus.off("npc:paid", this.onNpcPaid);
     EventBus.off("workout:complete", this.onWorkoutComplete);
     EventBus.off("scene:switch", this.onSceneSwitch);

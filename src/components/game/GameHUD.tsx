@@ -4,7 +4,14 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { EventBus } from "@/lib/game/EventBus";
 import { XpBar } from "@/components/xp/XpBar";
 import { AudioManager } from "@/lib/game/systems/AudioManager";
-import { xpRequiredForLevel } from "@/lib/game/engine";
+import { statRequiredForLevel, xpRequiredForLevel, calculateTransformationStage } from "@/lib/game/engine";
+
+interface CharacterStats {
+  strength: number;
+  stamina: number;
+  discipline: number;
+  metabolism: number;
+}
 
 interface GameHUDProps {
   playerName: string;
@@ -14,6 +21,7 @@ interface GameHUDProps {
   initialLastRegenAt: string;
   initialTokens: number;
   initialLevel: number;
+  characterStats: CharacterStats;
   streakCount: number;
   gymName?: string;
   hasGym: boolean;
@@ -56,6 +64,7 @@ export function GameHUD({
   initialLastRegenAt,
   initialTokens,
   initialLevel,
+  characterStats,
   streakCount,
   gymName,
   hasGym,
@@ -67,21 +76,35 @@ export function GameHUD({
   const [tokens, setTokens]             = useState(initialTokens);
   const [level, setLevel]               = useState(initialLevel);
   const [levelingUp, setLevelingUp]     = useState(false);
+  const [hudError, setHudError] = useState<string | null>(null);
   const [activeScene, setActiveScene]   = useState<ActiveScene>(hasGym ? "GymScene" : "HomeScene");
   const [isFirstPerson, setIsFirstPerson] = useState(false);
   const [workoutReward, setWorkoutReward] = useState<{ xp: number; tokens: number } | null>(null);
   const [npcCount, setNpcCount]          = useState(0);
   const [pendingIncome, setPendingIncome] = useState(0);
   const [workoutActive, setWorkoutActive] = useState(false);
+  // Stats gate level-up alongside XP, and they move as the player works out, so
+  // they live in state (seeded from the server render) rather than in the prop.
+  const [stats, setStats]                 = useState(characterStats);
 
   const displayTokens = useAnimatedNumber(tokens);
   const displayPending = useAnimatedNumber(pendingIncome);
+  const requiredStat = statRequiredForLevel(level);
   const levelUpCost = xpRequiredForLevel(level);
-  const canLevelUp = currentXp + overflowXp >= levelUpCost;
+  const transformationStage = calculateTransformationStage(level);
+  const statsMet =
+    stats.strength   >= requiredStat &&
+    stats.stamina    >= requiredStat &&
+    stats.discipline >= requiredStat &&
+    stats.metabolism >= requiredStat;
+  const shortStats = (["strength", "stamina", "discipline", "metabolism"] as const)
+    .filter((k) => stats[k] < requiredStat);
+  const xpMet = currentXp + overflowXp >= levelUpCost;
 
   const handleLevelUp = useCallback(async () => {
     if (levelingUp) return;
     setLevelingUp(true);
+    setHudError(null);
     try {
       const res = await fetch("/api/game/level-up", { method: "POST" });
       const data = await res.json();
@@ -91,9 +114,15 @@ export function GameHUD({
         setOverflowXp(data.overflowXp);
         EventBus.emit("player:level_up", { newLevel: data.level });
         AudioManager.playUIClick();
+      } else {
+        setHudError(data.error ?? "Level up failed");
+        AudioManager.playError();
       }
-    } catch { /* silent */ } finally {
+    } catch {
+      setHudError("Level up failed");
+    } finally {
       setLevelingUp(false);
+      setTimeout(() => setHudError(null), 4000);
     }
   }, [levelingUp]);
 
@@ -114,29 +143,31 @@ export function GameHUD({
     };
     const onWorkoutStarted = () => setWorkoutActive(true);
     const onWorkoutQuit = () => setWorkoutActive(false);
-    const onWorkoutComplete = async (d: { xpEarned: number; tokensEarned: number; equipmentId?: string; intensity?: string }) => {
+    const onWorkoutComplete = async (d: { xpCost: number; tokensEarned: number; equipmentId?: string; intensity?: string }) => {
       setWorkoutActive(false);
-      setWorkoutReward({ xp: d.xpEarned, tokens: d.tokensEarned });
-      setTokens((t) => t + d.tokensEarned);
-      setTimeout(() => setWorkoutReward(null), 3500);
 
       try {
         const res = await fetch("/api/game/workout/gym", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            xpEarned:    d.xpEarned,
+            xpCost:      d.xpCost,
             tokensEarned: d.tokensEarned,
             intensity:   d.intensity ?? "MEDIUM",
             equipmentId: d.equipmentId ?? "unknown",
           }),
         });
+        const data = await res.json();
         if (res.ok) {
-          const data = await res.json();
+          setWorkoutReward({ xp: data.xpSpent, tokens: d.tokensEarned });
+          setTokens((t) => t + d.tokensEarned);
+          setTimeout(() => setWorkoutReward(null), 3500);
+
           setCurrentXp(data.currentXp);
           setOverflowXp(data.overflowXp);
           setRestUntil(data.restUntil ?? null);
           setLastRegenAt(new Date().toISOString());
+          if (data.stats) setStats(data.stats);
           EventBus.emit("player:xp_changed", {
             currentXp:  data.currentXp,
             overflowXp: data.overflowXp,
@@ -145,8 +176,14 @@ export function GameHUD({
           if (data.exhausted) {
             EventBus.emit("player:exhausted", { restUntil: data.restUntil });
           }
+        } else {
+          setHudError(data.error ?? "Workout could not be recorded");
+          setTimeout(() => setHudError(null), 4000);
         }
-      } catch { /* silent — optimistic update already shown */ }
+      } catch {
+        setHudError("Workout could not be recorded");
+        setTimeout(() => setHudError(null), 4000);
+      }
     };
     const onIncomeCollected = (d: { amount: number }) => {
       setTokens((t) => t + d.amount);
@@ -192,6 +229,7 @@ export function GameHUD({
         setOverflowXp(d.overflowXp);
         setRestUntil(d.restUntil ?? null);
         setLastRegenAt(new Date().toISOString());
+        if (d.stats) setStats(d.stats);
         EventBus.emit("player:xp_changed", { currentXp: d.currentXp, overflowXp: d.overflowXp, restUntil: d.restUntil ?? null });
       }
     } catch { /* silent */ }
@@ -240,18 +278,25 @@ export function GameHUD({
 
         {/* XP Bar */}
         <div style={{ pointerEvents: "auto", marginTop: "6px" }}>
-          <XpBar currentXp={currentXp} overflowXp={overflowXp} restUntil={restUntil} lastXpRegenAt={lastRegenAt} />
+          <XpBar currentXp={currentXp} overflowXp={overflowXp} restUntil={restUntil} lastXpRegenAt={lastRegenAt} transformationStage={transformationStage} />
         </div>
 
-        {/* Level up */}
-        {canLevelUp && (
-          <button
-            onClick={handleLevelUp}
-            disabled={levelingUp}
-            style={styles.levelUpBtn}
-          >
-            {levelingUp ? "Leveling..." : `⬆️ Level Up to ${level + 1} (${levelUpCost} XP)`}
-          </button>
+        {/* Level up — stats gate eligibility, XP pays for the push */}
+        <button
+          onClick={handleLevelUp}
+          disabled={levelingUp || !statsMet || !xpMet}
+          style={{ ...styles.levelUpBtn, ...(statsMet && xpMet ? {} : styles.levelUpBtnLocked) }}
+        >
+          {levelingUp
+            ? "Leveling..."
+            : !statsMet
+            ? `🔒 Need ${requiredStat} in all stats to hit Lv.${level + 1}`
+            : !xpMet
+            ? `🔒 Need ${levelUpCost} XP to hit Lv.${level + 1} (you have ${currentXp + overflowXp})`
+            : `⬆️ Level Up to ${level + 1} (${levelUpCost} XP)`}
+        </button>
+        {hudError && (
+          <div style={styles.hudErrorBanner}>⚠️ {hudError}</div>
         )}
       </div>
 
@@ -302,7 +347,7 @@ export function GameHUD({
       {workoutReward && (
         <div style={styles.rewardPopup}>
           <div style={styles.rewardEmoji}>🎉</div>
-          <div style={styles.rewardXp}>+{workoutReward.xp} XP</div>
+          <div style={styles.rewardXpSpent}>-{workoutReward.xp} XP</div>
           <div style={styles.rewardTokens}>+{workoutReward.tokens} 🪙</div>
           {/* Confetti dots */}
           <div style={styles.confettiContainer}>
@@ -427,6 +472,24 @@ const styles: Record<string, React.CSSProperties> = {
     pointerEvents: "auto" as const,
     animation: "pulse-badge 1.4s ease-in-out infinite",
   },
+  levelUpBtnLocked: {
+    border: "1px solid rgba(255,255,255,0.12)",
+    background: "rgba(255,255,255,0.04)",
+    color: "#5a5a70",
+    cursor: "not-allowed",
+    animation: "none",
+  },
+  hudErrorBanner: {
+    marginTop: "6px",
+    padding: "6px 10px",
+    borderRadius: "8px",
+    background: "rgba(239,68,68,0.12)",
+    border: "1px solid rgba(239,68,68,0.35)",
+    color: "#f87171",
+    fontSize: "11px",
+    fontWeight: 600,
+    pointerEvents: "auto" as const,
+  },
   quitWorkoutWrap: {
     position: "fixed" as const,
     bottom: 168,
@@ -534,11 +597,11 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: "6px",
     filter: "drop-shadow(0 2px 8px rgba(255,215,0,0.4))",
   },
-  rewardXp: {
-    fontSize: "26px", fontWeight: 900,
-    color: "#c4b5fd",
+  rewardXpSpent: {
+    fontSize: "22px", fontWeight: 900,
+    color: "#f87171",
     letterSpacing: "1px",
-    textShadow: "0 0 20px rgba(108,71,255,0.5)",
+    textShadow: "0 0 20px rgba(239,68,68,0.4)",
   },
   rewardTokens: {
     fontSize: "20px", fontWeight: 700,

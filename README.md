@@ -1,4 +1,4 @@
-# Gym Tycoon MVP
+# GymPrenuer MVP
 
 A blockchain-ready fitness gaming platform where players earn tokens by training. Built with Next.js, TypeScript, Prisma, and PostgreSQL.
 

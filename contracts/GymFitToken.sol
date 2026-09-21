@@ -9,7 +9,7 @@ import "@openzeppelin/contracts/utils/Pausable.sol";
 
 /**
  * @title GymFitToken
- * @notice ERC-20 in-game currency for Gym Tycoon on Base.
+ * @notice ERC-20 in-game currency for GymPrenuer on Base.
  *
  * Tokenomics (controlled emission):
  *   - Hard cap: 1,000,000,000 GYMFIT

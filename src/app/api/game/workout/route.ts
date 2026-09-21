@@ -4,11 +4,9 @@ import { prisma } from "@/lib/db/prisma";
 import {
   calculateWorkoutReward,
   calculateStatGain,
-  calculateTransformationStage,
   calculateStreakUpdate,
   calculateWorkoutXpCost,
-  applyXpReward,
-  addTotalXp,
+  spendXp,
 } from "@/lib/game/engine";
 
 const REST_DURATION_MS = 30 * 60 * 1000; // 30 min
@@ -64,28 +62,26 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Calculate XP cost for this workout
-  const xpCost = calculateWorkoutXpCost(durationMins, intensity);
-
-  // Check XP: deduct from overflow first, then currentXp
+  // XP is spent, not earned, by working out — a depleted pool blocks further workouts.
   const totalAvailable = user.currentXp + user.overflowXp;
-  if (totalAvailable < xpCost) {
+  if (totalAvailable <= 0) {
     return Response.json(
-      { error: "Not enough XP for this workout", currentXp: user.currentXp, overflowXp: user.overflowXp, xpCost },
-      { status: 400 }
+      { error: "No XP left — rest to recover before working out.", currentXp: user.currentXp, overflowXp: user.overflowXp },
+      { status: 402 }
     );
   }
 
-  // Deduct XP cost (overflow first)
-  let newOverflow = user.overflowXp;
-  let newCurrent = user.currentXp;
-  if (newOverflow >= xpCost) {
-    newOverflow -= xpCost;
-  } else {
-    const remainder = xpCost - newOverflow;
-    newOverflow = 0;
-    newCurrent = Math.max(0, newCurrent - remainder);
+  const xpCost = calculateWorkoutXpCost(durationMins, intensity);
+  if (totalAvailable < xpCost) {
+    return Response.json(
+      { error: "Not enough XP for this workout", currentXp: user.currentXp, overflowXp: user.overflowXp, xpCost },
+      { status: 402 }
+    );
   }
+
+  const spent = spendXp(user.currentXp, user.overflowXp, xpCost);
+  const newCurrent = spent.currentXp;
+  const newOverflow = spent.overflowXp;
 
   const fitnessBoost = Number(fitnessSync?.fitnessBoost ?? 0);
   const streakCount = streak?.currentStreak ?? 0;
@@ -99,12 +95,6 @@ export async function POST(req: NextRequest) {
     dailyWorkoutCount: todayCount,
   });
 
-  // Add XP reward back (overflow if bar is full), capped at MAX_XP_ACCUMULATION total
-  const xpReward = applyXpReward(newCurrent, newOverflow, reward.totalXp);
-  newCurrent = xpReward.currentXp;
-  newOverflow = xpReward.overflowXp;
-  const xpEarned = xpReward.xpAdded;
-
   // Rest if exhausted
   const exhausted = newCurrent === 0 && newOverflow === 0;
   const restUntil = exhausted ? new Date(Date.now() + REST_DURATION_MS) : null;
@@ -116,15 +106,12 @@ export async function POST(req: NextRequest) {
     streak?.longestStreak ?? 0
   );
 
-  // Stat gains
+  // Stat gains — boosted by the same synced-fitness multiplier as tokens.
+  // Leveling (and the transformation stage it drives) is stats-only now, so
+  // this is the entire progression payoff of a workout beyond GYMFIT.
   const statGain = character && plan
-    ? calculateStatGain(plan.type, durationMins, intensity)
+    ? calculateStatGain(plan.type, durationMins, intensity, reward.fitnessBoostApplied)
     : null;
-
-  // New XP total
-  const totalXpUpdate = addTotalXp(user.totalXp ?? BigInt(0), xpEarned);
-  const newTotalXp = totalXpUpdate.totalXp;
-  const newStage = calculateTransformationStage(newTotalXp);
 
   // Run all DB writes in a transaction
   await prisma.$transaction(async (tx) => {
@@ -138,7 +125,7 @@ export async function POST(req: NextRequest) {
         durationMins,
         intensity,
         adherencePct,
-        xpEarned: xpEarned,
+        xpEarned: 0, // workouts no longer earn XP, only spend it (see xpCost)
         tokensEarned: reward.totalTokens,
         fitnessBoost: reward.fitnessBoostApplied,
       },
@@ -150,14 +137,14 @@ export async function POST(req: NextRequest) {
       data: {
         currentXp: newCurrent,
         overflowXp: newOverflow,
-        totalXp: newTotalXp,
         offChainTokens: user.offChainTokens + reward.totalTokens,
         lastXpRegenAt: new Date(),
         ...(restUntil ? { restUntil } : {}),
       },
     });
 
-    // 3. Update character stats
+    // 3. Update character stats — transformationStage is recomputed only on
+    // level-up (see /api/game/level-up), since level is what now drives it.
     if (character && statGain) {
       await tx.character.update({
         where: { id: character.id },
@@ -166,7 +153,6 @@ export async function POST(req: NextRequest) {
           stamina: character.stamina + statGain.stamina,
           discipline: character.discipline + statGain.discipline,
           metabolism: character.metabolism + statGain.metabolism,
-          transformationStage: newStage,
         },
       });
     }
@@ -225,7 +211,6 @@ export async function POST(req: NextRequest) {
     reward,
     statGain,
     newStreak: streakUpdate.newStreak,
-    newStage,
     xpCost,
     currentXp: newCurrent,
     overflowXp: newOverflow,

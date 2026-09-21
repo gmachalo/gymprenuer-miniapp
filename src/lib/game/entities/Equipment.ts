@@ -8,8 +8,7 @@ export interface EquipmentConfig {
   id: string;
   name: string;
   textureKey: string;
-  xpCost: number;
-  xpReward: number;
+  xpCost: number; // XP spent to use this equipment — no XP is ever earned back
   tokenReward: number;
   intensity: "LOW" | "MEDIUM" | "HIGH";
   level?: number;
@@ -25,7 +24,6 @@ export class Equipment extends Phaser.GameObjects.Container {
   readonly equipId: string;
   readonly equipName: string;
   readonly xpCost: number;
-  readonly xpReward: number;
   readonly tokenReward: number;
   readonly intensity: "LOW" | "MEDIUM" | "HIGH";
   level: number;
@@ -52,7 +50,6 @@ export class Equipment extends Phaser.GameObjects.Container {
     this.equipId      = config.id;
     this.equipName    = config.name;
     this.xpCost       = config.xpCost;
-    this.xpReward     = config.xpReward;
     this.tokenReward  = config.tokenReward;
     this.intensity    = config.intensity;
     this.level        = config.level ?? 1;
@@ -134,8 +131,8 @@ export class Equipment extends Phaser.GameObjects.Container {
     bg.fillStyle(0x1a1a2e, 0.95).fillRoundedRect(-52, -12, 104, 22, 8);
     bg.lineStyle(1, accentColor, 0.5).strokeRoundedRect(-52, -12, 104, 22, 8);
 
-    // Cost/reward text
-    const text = this.scene.add.text(0, 0, `⚡${this.xpCost} → +${this.xpReward}XP  +${this.tokenReward}🪙`, {
+    // Cost/reward text — XP is spent (never earned), tokens are still earned
+    const text = this.scene.add.text(0, 0, `⚡-${this.xpCost} XP  →  +${this.tokenReward}🪙`, {
       fontFamily: "Inter, sans-serif", fontSize: "9px",
       color: "#c4b5fd",
     }).setOrigin(0.5);
@@ -304,7 +301,7 @@ export class Equipment extends Phaser.GameObjects.Container {
 
     EventBus.emit("workout:complete", {
       equipmentId:  this.equipId,
-      xpEarned:     this.xpReward,
+      xpCost:       this.xpCost,
       tokensEarned: this.tokenReward,
     });
   }

@@ -8,9 +8,15 @@ export class IncomeSystem {
   private pool: Phaser.GameObjects.Text[] = [];
   private pendingIncome = 0;
   private incomeIndicators: Map<string, Phaser.GameObjects.Image> = new Map();
+  // Phaser destroys the whole display list on scene teardown, but this system is
+  // reachable from the global EventBus (npc:paid), which outlives the scene. A
+  // late emission would otherwise draw into an already-destroyed Text canvas.
+  private alive = true;
 
   constructor(scene: Phaser.Scene) {
     this.scene = scene;
+    scene.events.once(Phaser.Scenes.Events.SHUTDOWN, this.handleSceneTeardown, this);
+    scene.events.once(Phaser.Scenes.Events.DESTROY, this.handleSceneTeardown, this);
     // Pre-create pool
     for (let i = 0; i < POOL_SIZE; i++) {
       const t = scene.add
@@ -28,8 +34,21 @@ export class IncomeSystem {
     }
   }
 
+  // Drops the pool so nothing here can touch a destroyed game object. Pending
+  // income is kept — it is plain state the next scene reads back on collect.
+  private handleSceneTeardown() {
+    this.alive = false;
+    this.pool = [];
+    this.incomeIndicators.clear();
+  }
+
   spawnReward(worldX: number, worldY: number, text: string, color = "#ffd700") {
-    const available = this.pool.find((t) => t.alpha === 0);
+    if (!this.alive) return;
+    // `t.scene` is the liveness check: Phaser's GameObject.destroy() sets it to
+    // undefined (along with active/visible), and reading it afterwards is safe.
+    // Belt-and-braces with the `alive` flag — a destroyed Text has a null canvas
+    // context, so setText() on one throws inside drawImage.
+    const available = this.pool.find((t) => t.scene && t.alpha === 0);
     if (!available) return;
 
     available
@@ -51,8 +70,12 @@ export class IncomeSystem {
     });
   }
 
-  spawnXpReward(worldX: number, worldY: number, xp: number) {
-    this.spawnReward(worldX, worldY - 20, `+${xp} XP`, "#a78bfa");
+  spawnXpCost(worldX: number, worldY: number, xp: number) {
+    this.spawnReward(worldX, worldY - 20, `-${xp} XP`, "#f87171");
+  }
+
+  spawnXpGain(worldX: number, worldY: number, xp: number) {
+    this.spawnReward(worldX, worldY - 20, `+${xp} XP`, "#00d4aa");
   }
 
   spawnTokenReward(worldX: number, worldY: number, tokens: number) {
@@ -65,6 +88,7 @@ export class IncomeSystem {
   }
 
   addIncomeIndicator(zoneId: string, x: number, y: number) {
+    if (!this.alive) return;
     if (this.incomeIndicators.has(zoneId)) return;
     const ind = this.scene.add
       .image(x, y - 20, "income_indicator")
@@ -85,6 +109,7 @@ export class IncomeSystem {
   }
 
   removeIncomeIndicator(zoneId: string) {
+    if (!this.alive) return;
     const ind = this.incomeIndicators.get(zoneId);
     if (ind) {
       this.scene.tweens.killTweensOf(ind);
