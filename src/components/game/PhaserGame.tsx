@@ -8,6 +8,11 @@ export interface PhaserGameProps {
   onReady?: () => void;
 }
 
+/** Logical canvas width every scene is laid out against. */
+const LOGICAL_WIDTH = 480;
+/** The gym floor plan (back wall, 4×4 equipment grid, lounge, entrance) needs this much height. */
+const MIN_LOGICAL_HEIGHT = 800;
+
 // Lazy import — Phaser is large, only loaded client-side
 let phaserInstance: import("phaser").Game | null = null;
 
@@ -31,13 +36,20 @@ export function PhaserGame({ initData, onReady }: PhaserGameProps) {
       if (!mounted || !containerRef.current) return;
 
       const container = containerRef.current;
-      const w = container.clientWidth;
-      const h = container.clientHeight;
+      const w = container.clientWidth || LOGICAL_WIDTH;
+      const h = container.clientHeight || MIN_LOGICAL_HEIGHT;
+
+      // Every scene lays out in a fixed 480-wide logical space. The height
+      // follows the container's aspect so FIT fills a phone screen edge to edge,
+      // but never drops below what the gym floor needs. Sizing the canvas to the
+      // raw container instead pushed the right-hand equipment off narrow phones
+      // and bunched everything into a corner on wide desktops.
+      const logicalHeight = Math.max(MIN_LOGICAL_HEIGHT, Math.round((LOGICAL_WIDTH * h) / w));
 
       const config: import("phaser").Types.Core.GameConfig = {
         type: Phaser.AUTO,
-        width: w || 480,
-        height: h || 700,
+        width: LOGICAL_WIDTH,
+        height: logicalHeight,
         backgroundColor: "#0d1117",
         parent: container,
         scene: [BootScene, GymScene, HomeScene, WorkoutScene],

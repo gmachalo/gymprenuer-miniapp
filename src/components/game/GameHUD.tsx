@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import Link from "next/link";
 import { EventBus } from "@/lib/game/EventBus";
 import { XpBar } from "@/components/xp/XpBar";
 import { AudioManager } from "@/lib/game/systems/AudioManager";
@@ -56,6 +57,8 @@ function useAnimatedNumber(target: number, duration = 500) {
   return display;
 }
 
+const CONFETTI_LEFT = Array.from({ length: 12 }, (_, i) => `${10 + ((i * 0.618) % 1) * 80}%`);
+
 export function GameHUD({
   playerName,
   initialXp,
@@ -86,6 +89,13 @@ export function GameHUD({
   // Stats gate level-up alongside XP, and they move as the player works out, so
   // they live in state (seeded from the server render) rather than in the prop.
   const [stats, setStats]                 = useState(characterStats);
+  // Read by the EventBus handlers, whose effect subscribes once — state would be
+  // captured stale. Home workouts must go to the home route, or trainers at the
+  // player's gym get paid for sessions done at home.
+  const activeSceneRef = useRef<ActiveScene>(activeScene);
+  const topBarRef = useRef<HTMLDivElement>(null);
+  const sceneSwitcherRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { activeSceneRef.current = activeScene; }, [activeScene]);
 
   const displayTokens = useAnimatedNumber(tokens);
   const displayPending = useAnimatedNumber(pendingIncome);
@@ -133,6 +143,48 @@ export function GameHUD({
   // Init audio on mount
   useEffect(() => { AudioManager.init(); }, []);
 
+  // ── Report the covered strips to the camera ──────────────────────
+  // The stats bar covers the top of the canvas and the scene switcher plus the
+  // app nav cover the bottom. The scenes' camera rig pads its bounds by these
+  // amounts so nothing on the floor ends up stranded underneath (see CameraRig).
+  useEffect(() => {
+    let last = "";
+    const measure = () => {
+      const canvas = document.querySelector("canvas");
+      if (!canvas) return;
+      const c = canvas.getBoundingClientRect();
+      if (c.height === 0) return;
+      const top = topBarRef.current?.getBoundingClientRect();
+      const bottomEdges = [sceneSwitcherRef.current, document.querySelector(".nav-bar")]
+        .filter((el): el is Element => !!el)
+        .map((el) => el.getBoundingClientRect().top);
+      const insets = {
+        top: Math.round(top ? Math.max(0, top.bottom - c.top) : 0),
+        bottom: Math.round(Math.max(0, c.bottom - Math.min(c.bottom, ...bottomEdges))),
+      };
+      const key = `${insets.top}:${insets.bottom}`;
+      if (key === last) return;
+      last = key;
+      EventBus.emit("hud:insets", insets);
+    };
+    const onSceneReady = () => {
+      last = ""; // a freshly started scene needs the current values
+      measure();
+    };
+
+    measure();
+    const observer = new ResizeObserver(measure);
+    if (topBarRef.current) observer.observe(topBarRef.current);
+    if (sceneSwitcherRef.current) observer.observe(sceneSwitcherRef.current);
+    window.addEventListener("resize", measure);
+    EventBus.on("scene:ready", onSceneReady);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+      EventBus.off("scene:ready", onSceneReady);
+    };
+  }, []);
+
   // ── Subscribe to EventBus ─────────────────────────────────────
   useEffect(() => {
     const onXpChanged = (d: { currentXp: number; overflowXp: number; restUntil: string | null }) => {
@@ -147,7 +199,9 @@ export function GameHUD({
       setWorkoutActive(false);
 
       try {
-        const res = await fetch("/api/game/workout/gym", {
+        const endpoint =
+          activeSceneRef.current === "HomeScene" ? "/api/game/workout/home" : "/api/game/workout/gym";
+        const res = await fetch(endpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -159,8 +213,9 @@ export function GameHUD({
         });
         const data = await res.json();
         if (res.ok) {
-          setWorkoutReward({ xp: data.xpSpent, tokens: d.tokensEarned });
-          setTokens((t) => t + d.tokensEarned);
+          const paid = Number(data.tokensEarned ?? 0);
+          setWorkoutReward({ xp: data.xpSpent, tokens: paid });
+          setTokens((t) => t + paid);
           setTimeout(() => setWorkoutReward(null), 3500);
 
           setCurrentXp(data.currentXp);
@@ -220,26 +275,31 @@ export function GameHUD({
   }, []);
 
   // ── XP regen sync ────────────────────────────────────────────
-  const syncXp = useCallback(async () => {
-    try {
-      const res = await fetch("/api/game/xp/regen", { method: "PATCH" });
-      if (res.ok) {
-        const d = await res.json();
-        setCurrentXp(d.currentXp);
-        setOverflowXp(d.overflowXp);
-        setRestUntil(d.restUntil ?? null);
-        setLastRegenAt(new Date().toISOString());
-        if (d.stats) setStats(d.stats);
-        EventBus.emit("player:xp_changed", { currentXp: d.currentXp, overflowXp: d.overflowXp, restUntil: d.restUntil ?? null });
-      }
-    } catch { /* silent */ }
-  }, []);
-
+  // State is only touched from the promise callbacks, and the cancelled flag
+  // keeps a slow response from landing after the HUD has unmounted.
   useEffect(() => {
-    syncXp();
-    const id = setInterval(syncXp, 30_000);
-    return () => clearInterval(id);
-  }, [syncXp]);
+    let cancelled = false;
+    const tick = () => {
+      fetch("/api/game/xp/regen", { method: "PATCH" })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((d) => {
+          if (cancelled || !d) return;
+          setCurrentXp(d.currentXp);
+          setOverflowXp(d.overflowXp);
+          setRestUntil(d.restUntil ?? null);
+          setLastRegenAt(new Date().toISOString());
+          if (d.stats) setStats(d.stats);
+          EventBus.emit("player:xp_changed", { currentXp: d.currentXp, overflowXp: d.overflowXp, restUntil: d.restUntil ?? null });
+        })
+        .catch(() => { /* silent — the next tick retries */ });
+    };
+    tick();
+    const id = setInterval(tick, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
 
   // ── Scene switch ─────────────────────────────────────────────
   const switchScene = (to: ActiveScene) => {
@@ -253,7 +313,7 @@ export function GameHUD({
   return (
     <>
       {/* ── Top HUD Bar ── */}
-      <div style={styles.topBar}>
+      <div ref={topBarRef} style={styles.topBar}>
         {/* Player info */}
         <div style={styles.playerRow}>
           <div style={styles.avatarOuter}>
@@ -310,7 +370,7 @@ export function GameHUD({
       )}
 
       {/* ── Scene switcher ── */}
-      <div style={styles.sceneSwitcher}>
+      <div ref={sceneSwitcherRef} style={styles.sceneSwitcher}>
         <div style={styles.sceneSwitcherInner}>
           <button
             onClick={() => switchScene("HomeScene")}
@@ -332,9 +392,9 @@ export function GameHUD({
               🏢 {gymName ?? "Gym"}
             </button>
           ) : (
-            <a href="/gyms" style={styles.joinLink}>+ Join Gym</a>
+            <Link href="/gyms" style={styles.joinLink}>+ Join Gym</Link>
           )}
-          <a href="/dashboard" style={styles.menuLink}>☰</a>
+          <Link href="/dashboard" style={styles.menuLink}>☰</Link>
           {/* Active indicator bar */}
           <div style={{
             ...styles.tabIndicator,
@@ -351,10 +411,10 @@ export function GameHUD({
           <div style={styles.rewardTokens}>+{workoutReward.tokens} 🪙</div>
           {/* Confetti dots */}
           <div style={styles.confettiContainer}>
-            {Array.from({ length: 12 }).map((_, i) => (
+            {CONFETTI_LEFT.map((left, i) => (
               <div key={i} style={{
                 ...styles.confettiDot,
-                left: `${10 + Math.random() * 80}%`,
+                left,
                 animationDelay: `${i * 0.08}s`,
                 backgroundColor: ["#a78bfa", "#00d4aa", "#ffd700", "#f72585", "#4cc9f0"][i % 5],
               }} />
@@ -492,7 +552,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   quitWorkoutWrap: {
     position: "fixed" as const,
-    bottom: 168,
+    bottom: "calc(84px + env(safe-area-inset-bottom, 0px))", // just above the scene switcher
     left: "50%",
     transform: "translateX(-50%)",
     zIndex: 50,
@@ -512,7 +572,8 @@ const styles: Record<string, React.CSSProperties> = {
   },
   sceneSwitcher: {
     position: "fixed",
-    bottom: 100,
+    // The app nav is hidden on /play, so this sits at the screen edge.
+    bottom: "calc(16px + env(safe-area-inset-bottom, 0px))",
     left: "50%",
     transform: "translateX(-50%)",
     zIndex: 50,

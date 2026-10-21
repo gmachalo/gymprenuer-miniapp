@@ -34,7 +34,9 @@ export class BootScene extends Phaser.Scene {
   create() {
     this.generateTextures();
     EventBus.emit("scene:ready", { name: "BootScene" });
-    this.scene.start("GymScene");
+    // Match the HUD's opening tab: players without a gym start at home.
+    const data = this.registry.get("playerData") as { hasGym?: boolean } | undefined;
+    this.scene.start(data?.hasGym === false ? "HomeScene" : "GymScene");
   }
 
   private generateTextures() {

@@ -6,6 +6,7 @@ import {
   calculateStatGain,
   calculateStreakUpdate,
   calculateWorkoutXpCost,
+  workoutXpCost,
   spendXp,
 } from "@/lib/game/engine";
 
@@ -71,7 +72,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const xpCost = calculateWorkoutXpCost(durationMins, intensity);
+  const xpCost = workoutXpCost(calculateWorkoutXpCost(durationMins, intensity), user.level);
   if (totalAvailable < xpCost) {
     return Response.json(
       { error: "Not enough XP for this workout", currentXp: user.currentXp, overflowXp: user.overflowXp, xpCost },

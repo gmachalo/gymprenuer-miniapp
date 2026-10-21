@@ -1,5 +1,6 @@
 import Phaser from "phaser";
 import { EventBus } from "@/lib/game/EventBus";
+import { GRADE_COLORS, workoutXpCost } from "@/lib/game/engine";
 
 export interface EquipmentConfig {
   scene: Phaser.Scene;
@@ -8,10 +9,15 @@ export interface EquipmentConfig {
   id: string;
   name: string;
   textureKey: string;
-  xpCost: number; // XP spent to use this equipment — no XP is ever earned back
+  /** The machine's base XP cost at level 1 — scaled by `playerLevel` (no XP is ever earned back). */
+  xpCost: number;
+  /** The player's level; workouts cost more as it rises. */
+  playerLevel?: number;
   tokenReward: number;
   intensity: "LOW" | "MEDIUM" | "HIGH";
   level?: number;
+  /** Equipment grade (1 = home … 6 = championship) — drives the plinth colour. */
+  grade?: number;
 }
 
 const INTENSITY_COLOR: Record<string, number> = {
@@ -23,7 +29,10 @@ const INTENSITY_COLOR: Record<string, number> = {
 export class Equipment extends Phaser.GameObjects.Container {
   readonly equipId: string;
   readonly equipName: string;
-  readonly xpCost: number;
+  /** What a workout here costs the player right now (base cost scaled by level). */
+  xpCost: number;
+  private readonly baseXpCost: number;
+  private costText!: Phaser.GameObjects.Text;
   readonly tokenReward: number;
   readonly intensity: "LOW" | "MEDIUM" | "HIGH";
   level: number;
@@ -49,7 +58,8 @@ export class Equipment extends Phaser.GameObjects.Container {
 
     this.equipId      = config.id;
     this.equipName    = config.name;
-    this.xpCost       = config.xpCost;
+    this.baseXpCost   = config.xpCost;
+    this.xpCost       = workoutXpCost(config.xpCost, config.playerLevel ?? 1);
     this.tokenReward  = config.tokenReward;
     this.intensity    = config.intensity;
     this.level        = config.level ?? 1;
@@ -58,12 +68,28 @@ export class Equipment extends Phaser.GameObjects.Container {
     const accentColor = INTENSITY_COLOR[config.intensity] ?? 0x6c47ff;
 
     // ── Outer glow pulse (very subtle) ──────────────────────────────────────
-    this.glowPulse = config.scene.add.arc(0, 0, 52, 0, 360, false, accentColor, 0).setDepth(-2);
+    this.glowPulse = config.scene.add.arc(0, 0, 34, 0, 360, false, accentColor, 0).setDepth(-2);
     this.add(this.glowPulse);
 
     // ── Inner proximity glow ring ────────────────────────────────────────────
     this.glowRing = config.scene.add.arc(0, 0, 40, 0, 360, false, accentColor, 0).setDepth(-1);
     this.add(this.glowRing);
+
+    // ── Grade plinth ─────────────────────────────────────────────────────────
+    // A ring on the floor in the grade's colour: the visible difference between
+    // a tier-1 bench and championship kit. Grades 5–6 shimmer.
+    const grade = config.grade ?? 1;
+    const gradeColor = GRADE_COLORS[grade] ?? GRADE_COLORS[1];
+    const plinth = config.scene.add.ellipse(0, 22, 58, 16, gradeColor, 0.14);
+    plinth.setStrokeStyle(1.5, gradeColor, 0.75);
+    this.add(plinth);
+    if (grade >= 5) {
+      config.scene.tweens.add({
+        targets: plinth,
+        fillAlpha: 0.32, scaleX: 1.08,
+        duration: 1400, yoyo: true, repeat: -1, ease: "Sine.easeInOut",
+      });
+    }
 
     // ── Equipment sprite ─────────────────────────────────────────────────────
     this.sprite = config.scene.add.image(0, 0, config.textureKey).setScale(0.92);
@@ -71,9 +97,10 @@ export class Equipment extends Phaser.GameObjects.Container {
 
     // ── Level badge ──────────────────────────────────────────────────────────
     this.levelBadge = config.scene.add
-      .text(28, -30, `Lv.${this.level}`, {
+      .text(28, -30, grade > 1 ? `G${grade} · Lv.${this.level}` : `Lv.${this.level}`, {
         fontFamily: "Inter, sans-serif", fontSize: "7px", fontStyle: "bold",
-        color: "#ffffff", backgroundColor: "#6c47ffcc",
+        color: "#ffffff",
+        backgroundColor: `#${gradeColor.toString(16).padStart(6, "0")}cc`,
         padding: { x: 3, y: 1 },
       })
       .setOrigin(0.5)
@@ -117,10 +144,20 @@ export class Equipment extends Phaser.GameObjects.Container {
     // Gentle glow pulse (always running — punchier neon-arcade presence)
     config.scene.tweens.add({
       targets: this.glowPulse,
-      fillAlpha: 0.16, scaleX: 1.15, scaleY: 1.15,
+      fillAlpha: 0.1, scaleX: 1.1, scaleY: 1.1,
       duration: 2200 + Math.random() * 800,
       yoyo: true, repeat: -1, ease: "Sine.easeInOut",
     });
+  }
+
+  private costLabel(): string {
+    return `⚡-${this.xpCost} XP  →  +${this.tokenReward}🪙`;
+  }
+
+  /** Re-price for a new player level (after a level-up mid-session). */
+  setPlayerLevel(level: number) {
+    this.xpCost = workoutXpCost(this.baseXpCost, level);
+    this.costText?.setText(this.costLabel());
   }
 
   private buildPrompt(accentColor: number) {
@@ -132,10 +169,11 @@ export class Equipment extends Phaser.GameObjects.Container {
     bg.lineStyle(1, accentColor, 0.5).strokeRoundedRect(-52, -12, 104, 22, 8);
 
     // Cost/reward text — XP is spent (never earned), tokens are still earned
-    const text = this.scene.add.text(0, 0, `⚡-${this.xpCost} XP  →  +${this.tokenReward}🪙`, {
+    const text = this.scene.add.text(0, 0, this.costLabel(), {
       fontFamily: "Inter, sans-serif", fontSize: "9px",
       color: "#c4b5fd",
     }).setOrigin(0.5);
+    this.costText = text;
 
     // Intensity dot
     const intensityColors: Record<string, string> = { LOW: "#00d4aa", MEDIUM: "#a78bfa", HIGH: "#ef4444" };

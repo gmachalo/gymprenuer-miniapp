@@ -46,8 +46,10 @@ export function PlayClient({
   gymName,
   hasGym,
 }: PlayClientProps) {
+  // Pinned to the viewport: as a 100dvh block inside the padded page wrapper
+  // the page itself scrolled, sliding the canvas under the fixed HUD.
   return (
-    <div style={{ position: "relative", width: "100%", height: "100dvh", overflow: "hidden", background: "#0d1117" }}>
+    <div style={{ position: "fixed", inset: 0, overflow: "hidden", background: "#0d1117" }}>
       {/* Phaser canvas fills the screen */}
       <PhaserGame initData={initData} />
 

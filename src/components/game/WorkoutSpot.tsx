@@ -1,5 +1,7 @@
 "use client";
 
+import { GRADE_COLORS } from "@/lib/game/engine";
+
 interface WorkoutSpotProps {
   id: string;
   icon: string;
@@ -8,6 +10,8 @@ interface WorkoutSpotProps {
   tokenReward: string;
   /** Upgrade level of the installed machine — badged when the owner has invested in it. */
   level?: number;
+  /** Equipment grade — the tile border uses the same colour as the in-game plinth. */
+  grade?: number;
   disabled?: boolean;
   disabledReason?: string;
   occupied?: boolean;
@@ -15,12 +19,15 @@ interface WorkoutSpotProps {
   style?: React.CSSProperties;
 }
 
+const gradeHex = (grade: number) => `#${(GRADE_COLORS[grade] ?? GRADE_COLORS[1]).toString(16).padStart(6, "0")}`;
+
 export function WorkoutSpot({
   icon,
   label,
   xpCost,
   tokenReward,
   level = 1,
+  grade = 1,
   disabled,
   disabledReason,
   occupied,
@@ -50,7 +57,7 @@ export function WorkoutSpot({
           position: "relative",
           borderRadius: "14px",
           border: `2px solid ${
-            occupied ? "#f59e0b" : disabled ? "var(--border-subtle)" : "rgba(108,71,255,0.5)"
+            occupied ? "#f59e0b" : disabled ? "var(--border-subtle)" : `${gradeHex(grade)}99`
           }`,
           background: occupied
             ? "rgba(245,158,11,0.12)"
@@ -69,7 +76,7 @@ export function WorkoutSpot({
         }}
       >
         <span style={{ fontSize: "28px" }}>{icon}</span>
-        {level > 1 && (
+        {(grade > 1 || level > 1) && (
           <span
             style={{
               position: "absolute",
@@ -77,10 +84,11 @@ export function WorkoutSpot({
               right: "6px",
               fontSize: "8px",
               fontWeight: 800,
-              color: "#a78bfa",
+              color: gradeHex(grade),
             }}
           >
-            Lv.{level}
+            {/* Same badge text as the in-game equipment */}
+            {grade > 1 ? `G${grade} · Lv.${level}` : `Lv.${level}`}
           </span>
         )}
         <span style={{ fontSize: "9px", color: "var(--text-muted)", fontWeight: 600 }}>

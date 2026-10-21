@@ -2,6 +2,7 @@
 
 import { useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { GameWorld, type InstalledEquipment } from "@/components/game/GameWorld";
 import { XpBar } from "@/components/xp/XpBar";
 import { useXpRegen } from "@/hooks/useXpRegen";
@@ -23,6 +24,8 @@ interface GameDashboardClientProps {
   gymEquipment?: InstalledEquipment[];
   /** Amenity catalog keys the gym has bought. */
   gymAmenities?: string[];
+  /** The player's level — workout costs scale with it. */
+  playerLevel?: number;
 }
 
 export function GameDashboardClient({
@@ -35,6 +38,7 @@ export function GameDashboardClient({
   hasGym,
   gymEquipment,
   gymAmenities,
+  playerLevel,
 }: GameDashboardClientProps) {
   const [currentXp, setCurrentXp] = useState(initialXp);
   const [overflowXp, setOverflowXp] = useState(initialOverflow);
@@ -126,7 +130,7 @@ export function GameDashboardClient({
           </button>
         )}
         {!hasGym && (
-          <a
+          <Link
             href="/gyms"
             style={{
               flex: 1,
@@ -140,7 +144,7 @@ export function GameDashboardClient({
             }}
           >
             + Join a Gym
-          </a>
+          </Link>
         )}
       </div>
 
@@ -154,6 +158,7 @@ export function GameDashboardClient({
         isHome={worldMode === "home"}
         gymEquipment={gymEquipment}
         gymAmenities={gymAmenities}
+        playerLevel={playerLevel}
         onXpChange={handleXpChange}
       />
     </div>

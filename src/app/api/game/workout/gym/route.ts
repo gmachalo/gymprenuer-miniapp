@@ -8,6 +8,8 @@ import {
   MICRO_PER_GYMFIT,
   equipmentSpec,
   equipmentTokenYield,
+  HOME_EQUIPMENT_GRADE,
+  workoutXpCost,
 } from "@/lib/game/engine";
 
 const REST_DURATION_MS = 30 * 60 * 1000;
@@ -77,10 +79,28 @@ export async function POST(req: NextRequest) {
   // which is the whole point of tiering up. The client's figures are only a
   // fallback for equipment the catalog does not know.
   const installed = gymMembership?.gym.equipment.find((e) => e.type === equipmentId) ?? null;
-  const spec = equipmentSpec(installed?.type ?? equipmentId);
+  const catalogSpec = equipmentSpec(equipmentId);
+
+  // A machine pays only if the player actually has access to it: it is
+  // installed at their gym, or it is grade-1 home kit everyone owns. Without
+  // this, any client could claim a grade-6 machine's payout from a tier-1 gym
+  // (or from no gym at all) just by naming it.
+  if (catalogSpec && !installed && catalogSpec.grade > HOME_EQUIPMENT_GRADE) {
+    return Response.json(
+      {
+        error: gymMembership
+          ? `Your gym does not have a ${catalogSpec.name}.`
+          : `${catalogSpec.name} is gym equipment — join a gym to train on it.`,
+      },
+      { status: 403 }
+    );
+  }
+
+  const spec = installed ? equipmentSpec(installed.type) : catalogSpec;
   const equipmentLevel = installed?.level ?? 1;
 
-  const xpSpend = spec ? spec.xpCost : xpCost;
+  // The machine's base cost, scaled up by the player's level.
+  const xpSpend = workoutXpCost(spec ? spec.xpCost : xpCost, user.level);
   const tokenBigInt = BigInt(
     Math.max(0, Math.floor(spec ? equipmentTokenYield(spec, equipmentLevel) : tokensEarned))
   );

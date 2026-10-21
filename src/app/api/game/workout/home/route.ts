@@ -1,15 +1,22 @@
 import { NextRequest } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/db/prisma";
-import { spendXp, calculateStatGain } from "@/lib/game/engine";
+import {
+  spendXp,
+  calculateStatGain,
+  equipmentSpec,
+  equipmentTokenYield,
+  homeEquipment,
+  HOME_EQUIPMENT_GRADE,
+  workoutXpCost,
+} from "@/lib/game/engine";
 
-const HOME_XP_COST = 5;
-const HOME_TOKEN_REWARD = BigInt(3);
 const REST_DURATION_MS = 30 * 60 * 1000; // 30 min
 
-// POST /api/game/workout/home — perform a home workout. XP is spent, not
-// earned: this only ever deducts HOME_XP_COST, and refuses the workout
-// outright once the pool is at 0.
+// POST /api/game/workout/home — perform a home workout on grade-1 kit. XP is
+// spent, not earned, and the workout is refused outright once the pool is at 0.
+// Cost, payout and stat gain all come from the equipment catalog, so they match
+// what the home tiles and the HomeScene show.
 export async function POST(req: NextRequest) {
   const session = await auth();
   if (!session?.user?.id)
@@ -17,7 +24,14 @@ export async function POST(req: NextRequest) {
   const userId = session.user.id;
 
   const body = await req.json().catch(() => ({}));
-  const { intensity = "MEDIUM" } = body as { intensity?: string };
+  const { equipmentId } = body as { equipmentId?: string };
+
+  // Only grade-1 home kit can be used here; an unknown or gym-grade id falls
+  // back to the first home piece rather than paying out a gym machine's rate.
+  const requested = equipmentId ? equipmentSpec(equipmentId) : null;
+  const spec =
+    requested && requested.grade === HOME_EQUIPMENT_GRADE ? requested : homeEquipment()[0];
+  const intensity = spec.intensity;
 
   const user = await prisma.user.findUnique({
     where: { id: userId },
@@ -31,6 +45,9 @@ export async function POST(req: NextRequest) {
   });
 
   if (!user) return Response.json({ error: "User not found" }, { status: 404 });
+
+  // The kit's base cost, scaled up by the player's level.
+  const xpCost = workoutXpCost(spec.xpCost, user.level);
 
   // Check rest
   if (user.restUntil && user.restUntil > new Date()) {
@@ -47,18 +64,16 @@ export async function POST(req: NextRequest) {
       { status: 402 }
     );
   }
-  if (totalAvailable < HOME_XP_COST) {
+  if (totalAvailable < xpCost) {
     return Response.json(
-      { error: "Not enough XP for a home workout", currentXp: user.currentXp, overflowXp: user.overflowXp },
+      { error: `Not enough XP for ${spec.name}`, currentXp: user.currentXp, overflowXp: user.overflowXp, xpCost },
       { status: 402 }
     );
   }
 
-  // Intensity multiplier (tokens only — XP cost is flat)
-  const multiplier = intensity === "HIGH" ? 1.5 : intensity === "LOW" ? 0.6 : 1.0;
-  const tokenReward = BigInt(Math.floor(Number(HOME_TOKEN_REWARD) * multiplier));
+  const tokenReward = BigInt(equipmentTokenYield(spec, 1));
 
-  const spent = spendXp(user.currentXp, user.overflowXp, HOME_XP_COST);
+  const spent = spendXp(user.currentXp, user.overflowXp, xpCost);
   const newCurrent = spent.currentXp;
   const newOverflow = spent.overflowXp;
 
@@ -76,7 +91,7 @@ export async function POST(req: NextRequest) {
   // Stat gains — level-up is gated on stats as well as XP, so home workouts
   // have to move stats too, or the gate is unreachable without a gym.
   const statGain = character
-    ? calculateStatGain("HYBRID", durationMins, intensity, 0.02)
+    ? calculateStatGain(spec.planType, durationMins, intensity, 0.02)
     : null;
 
   const [updatedUser, workout, updatedCharacter] = await prisma.$transaction(async (tx) => {
@@ -124,7 +139,7 @@ export async function POST(req: NextRequest) {
 
   return Response.json({
     success: true,
-    xpSpent: HOME_XP_COST,
+    xpSpent: xpCost,
     tokensEarned: tokenReward.toString(),
     currentXp: updatedUser.currentXp,
     overflowXp: updatedUser.overflowXp,

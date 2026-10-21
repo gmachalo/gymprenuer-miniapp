@@ -10,6 +10,8 @@ import {
   homeEquipment,
   amenitySpec,
   standardAmenities,
+  floorOrder,
+  workoutXpCost,
 } from "@/lib/game/engine";
 import { RestModal } from "./RestModal";
 
@@ -29,6 +31,8 @@ interface GameWorldProps {
   gymEquipment?: InstalledEquipment[];
   /** Amenity catalog keys the gym has bought; standard fittings are implicit. */
   gymAmenities?: string[];
+  /** The player's level — workouts cost more as it rises. */
+  playerLevel?: number;
   onXpChange: (xp: number, overflow: number, restUntil: string | null) => void;
 }
 
@@ -40,6 +44,7 @@ interface WorkoutSpotDef {
   tokenReward: string;
   intensity: "LOW" | "MEDIUM" | "HIGH";
   level: number;
+  grade: number;
   top: string;
   left: string;
 }
@@ -93,7 +98,7 @@ function spotLayout(count: number) {
  * and the server payout read — so what is shown here is exactly what the player
  * will find on the floor, at the level the gym owner has upgraded it to.
  */
-function buildSpots(isHome: boolean, installed?: InstalledEquipment[]): WorkoutSpotDef[] {
+function buildSpots(isHome: boolean, level: number, installed?: InstalledEquipment[]): WorkoutSpotDef[] {
   // Rows the catalog does not recognise cannot be rendered or priced, so they
   // are dropped before deciding whether the gym has a floor of its own.
   const known = (installed ?? []).filter((piece) => !!equipmentSpec(piece.type));
@@ -105,16 +110,19 @@ function buildSpots(isHome: boolean, installed?: InstalledEquipment[]): WorkoutS
     : equipmentAvailableForTier(1).map((spec) => ({ type: spec.type, name: spec.name, level: 1 }));
 
   const layout = spotLayout(pieces.length);
-  return pieces.map((piece, index) => {
+  // Same order as the game world's floor: strength first, cardio last.
+  return floorOrder(pieces).map((piece, index) => {
     const spec = equipmentSpec(piece.type)!;
     return {
       id: spec.type,
       icon: spec.icon,
       label: piece.name || spec.name,
-      xpCost: spec.xpCost,
+      // Same scaled cost the server charges at this level.
+      xpCost: workoutXpCost(spec.xpCost, level),
       tokenReward: String(equipmentTokenYield(spec, piece.level)),
       intensity: spec.intensity,
       level: piece.level,
+      grade: spec.grade,
       ...layout.position(index),
     };
   });
@@ -164,6 +172,7 @@ export function GameWorld({
   isHome = false,
   gymEquipment,
   gymAmenities,
+  playerLevel = 1,
   onXpChange,
 }: GameWorldProps) {
   const [activeSpot, setActiveSpot] = useState<WorkoutSpotDef | null>(null);
@@ -174,7 +183,7 @@ export function GameWorld({
   const [showRest, setShowRest] = useState(restUntil ? new Date(restUntil) > new Date() : false);
   const [error, setError] = useState<string | null>(null);
 
-  const spots = useMemo(() => buildSpots(isHome, gymEquipment), [isHome, gymEquipment]);
+  const spots = useMemo(() => buildSpots(isHome, playerLevel, gymEquipment), [isHome, playerLevel, gymEquipment]);
   const layout = useMemo(() => spotLayout(spots.length), [spots.length]);
   // Amenities belong to the gym, so the strip is hidden at home.
   const amenities = useMemo(
@@ -390,6 +399,7 @@ export function GameWorld({
                 disabled={isResting || totalXp < spot.xpCost}
                 disabledReason={isResting ? "Resting" : totalXp < spot.xpCost ? "Low XP" : undefined}
                 level={spot.level}
+                grade={spot.grade}
                 occupied={isWorking && activeSpot?.id === spot.id}
                 onActivate={() => handleSpotClick(spot)}
               />

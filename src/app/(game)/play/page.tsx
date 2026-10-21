@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { redirect } from "next/navigation";
 import { PlayClient } from "./PlayClient";
 import { equipmentSpec, equipmentTokenYield } from "@/lib/game/engine";
+import { GYM_TIERS } from "@/app/api/game/gyms/[id]/upgrade/route";
 
 export default async function PlayPage() {
   const session = await auth();
@@ -50,7 +51,10 @@ export default async function PlayPage() {
         currentXp: user.currentXp,
         overflowXp: user.overflowXp,
         gymReputation: gymMembership?.gym.reputation ?? 30,
+        playerLevel: user.level,
+        hasGym: !!gymMembership,
         gymTier: gymMembership?.gym.tier ?? 1,
+        gymTierName: gymMembership ? GYM_TIERS[gymMembership.gym.tier - 1]?.name : undefined,
         // The gym scene renders the floor the gym has actually paid for.
         gymEquipment: (gymMembership?.gym.equipment ?? []).flatMap((e) => {
           const spec = equipmentSpec(e.type);

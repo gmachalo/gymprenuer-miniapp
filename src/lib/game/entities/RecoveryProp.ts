@@ -40,7 +40,7 @@ export class RecoveryProp extends Phaser.GameObjects.Container {
     this.xpGain = config.xpGain;
     this.interactionZone = new Phaser.Geom.Circle(config.x, config.y, 64);
 
-    this.glowPulse = config.scene.add.arc(0, 0, 46, 0, 360, false, config.accentColor, 0).setDepth(-2);
+    this.glowPulse = config.scene.add.arc(0, 0, 32, 0, 360, false, config.accentColor, 0).setDepth(-2);
     this.add(this.glowPulse);
     this.glowRing = config.scene.add.arc(0, 0, 36, 0, 360, false, config.accentColor, 0).setDepth(-1);
     this.add(this.glowRing);
@@ -70,7 +70,7 @@ export class RecoveryProp extends Phaser.GameObjects.Container {
     });
     config.scene.tweens.add({
       targets: this.glowPulse,
-      fillAlpha: 0.14, scaleX: 1.12, scaleY: 1.12,
+      fillAlpha: 0.1, scaleX: 1.08, scaleY: 1.08,
       duration: 2400 + Math.random() * 800,
       yoyo: true, repeat: -1, ease: "Sine.easeInOut",
     });

@@ -264,6 +264,34 @@ export function homeEquipment(): EquipmentSpec[] {
   return EQUIPMENT_CATALOG.filter((e) => e.grade === HOME_EQUIPMENT_GRADE);
 }
 
+// Load-bearing work at the back, cardio toward the front: the order a floor is
+// laid out in, so the game world and the dashboard tiles read the same way.
+const FLOOR_ZONE_ORDER: Record<string, number> = {
+  STRENGTH: 0,
+  HYBRID: 1,
+  CALISTHENICS: 2,
+  FAT_LOSS: 3,
+};
+
+/** Sort pieces into floor order (stable within a zone, so purchase order breaks ties). */
+export function floorOrder<T extends { type: string }>(pieces: T[]): T[] {
+  const zone = (p: T) => FLOOR_ZONE_ORDER[equipmentSpec(p.type)?.planType ?? "HYBRID"] ?? 1;
+  return pieces
+    .map((piece, index) => ({ piece, index }))
+    .sort((a, b) => zone(a.piece) - zone(b.piece) || a.index - b.index)
+    .map(({ piece }) => piece);
+}
+
+/** Accent colour for an equipment grade — home grey up to championship gold. */
+export const GRADE_COLORS: Record<number, number> = {
+  1: 0x8d99ae,
+  2: 0x4cc9f0,
+  3: 0x00d4aa,
+  4: 0xa78bfa,
+  5: 0xf72585,
+  6: 0xffd700,
+};
+
 /** GYMFIT paid out per workout — each upgrade level adds 25% of the base rate. */
 export function equipmentTokenYield(spec: EquipmentSpec, level: number): number {
   const lvl = Math.min(Math.max(level, 1), MAX_EQUIPMENT_LEVEL);
@@ -434,7 +462,7 @@ export const AMENITY_CATALOG: AmenitySpec[] = [
     blurb: "Fruit, greens and a blender. Members linger, and spend.",
   },
   {
-    type: "juicebar", name: "Juice & Nutrition Bar", kind: "REFRESHMENT", icon: "🧃",
+    type: "juicebar", name: "Juice Bar", kind: "REFRESHMENT", icon: "🧃",
     tex: "prop_fridge", verb: "Refuel", minTier: 5, xpGain: 14, cooldownMs: 20 * 60_000,
     installCost: 12000, standard: false, reputation: 18, accentColor: 0xffd700,
     blurb: "A staffed bar. The best recovery a gym floor can offer.",
@@ -653,6 +681,27 @@ export function calculateWorkoutXpCost(
   };
   const mult = intensityMult[intensity] ?? 1.0;
   return Math.max(3, Math.floor((durationMins / 5) * mult));
+}
+
+/** Each level above 1 adds this percentage of a workout's base XP cost. */
+export const WORKOUT_XP_PCT_PER_LEVEL = 15;
+
+/**
+ * What a workout actually costs a player of this level. Training gets more
+ * expensive as you level up — a Bench Press is 10 XP at level 1, 15 at level 4,
+ * 24 at level 10 — so the regenerating XP pool stays the limiting factor all
+ * the way up. Every place that charges or shows a workout's cost goes through
+ * here: the workout routes, the game world's machine prompts and the dashboard
+ * tiles.
+ */
+export function workoutXpCost(baseXpCost: number, level: number): number {
+  const lvl = Math.max(1, Math.floor(level || 1));
+  // Integer percentages: 0.15 × 9 is 1.3499… in floating point, which rounded
+  // a level-10 Bench Press's 23.5 down to 23 instead of up to 24.
+  const scaled = Math.round((baseXpCost * (100 + WORKOUT_XP_PCT_PER_LEVEL * (lvl - 1))) / 100);
+  // On cheap kit 15% is under a point, so rounding alone could repeat a cost
+  // (a Yoga Mat was 7 at both levels 3 and 4); every level adds at least 1 XP.
+  return Math.max(scaled, baseXpCost + (lvl - 1));
 }
 
 // ─── Character Stat Progression ───────────────────────────────────────────────

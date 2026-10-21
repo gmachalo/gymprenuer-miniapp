@@ -144,6 +144,7 @@ export default async function DashboardPage() {
               hasGym={!!gymMembership}
               gymEquipment={gymMembership?.gym.equipment ?? []}
               gymAmenities={(gymMembership?.gym.amenities ?? []).map((a) => a.type)}
+              playerLevel={user.level}
             />
           </div>
         ) : (

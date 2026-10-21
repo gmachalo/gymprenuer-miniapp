@@ -1,8 +1,15 @@
 import Phaser from "phaser";
 import { Player } from "@/lib/game/entities/Player";
-import { PlayerController } from "@/lib/game/systems/PlayerController";
+import {
+  PlayerController,
+  pickTapTarget,
+  pingTarget,
+  STAND_OFFSET,
+  type Interactable,
+} from "@/lib/game/systems/PlayerController";
 import { Equipment } from "@/lib/game/entities/Equipment";
 import { RecoveryProp } from "@/lib/game/entities/RecoveryProp";
+import { CameraRig } from "@/lib/game/systems/CameraRig";
 import { IncomeSystem } from "@/lib/game/systems/IncomeSystem";
 import { EventBus } from "@/lib/game/EventBus";
 import { HOME_RECOVERY_ITEMS, HomeRecoveryItemId, homeEquipment, equipmentTokenYield } from "@/lib/game/engine";
@@ -34,6 +41,8 @@ const RECOVERY_PROPS: Array<{ id: HomeRecoveryItemId; tex: string; x: number; y:
 
 export interface HomeSceneInitData {
   playerBodyType?: "SKINNY" | "AVERAGE" | "OVERWEIGHT";
+  /** The player's level — workouts cost more as it rises (see workoutXpCost). */
+  playerLevel?: number;
   playerName?: string;
   playerTransformationStage?: number;
 }
@@ -43,6 +52,7 @@ export class HomeScene extends Phaser.Scene {
   private controller!: PlayerController;
   private equipment: Equipment[] = [];
   private recoveryProps: RecoveryProp[] = [];
+  private cameraRig!: CameraRig;
   private incomeSystem!: IncomeSystem;
   private initData: HomeSceneInitData = {};
   private activeEquipment: Equipment | null = null;
@@ -81,6 +91,15 @@ export class HomeScene extends Phaser.Scene {
     }
   };
 
+  // Workouts cost more at higher levels; re-price every machine when the HUD
+  // reports a level-up, and remember it for the next scene start.
+  private onLevelUp = ({ newLevel }: { newLevel: number }) => {
+    this.initData.playerLevel = newLevel;
+    const registered = this.registry.get("playerData") as Record<string, unknown> | undefined;
+    if (registered) this.registry.set("playerData", { ...registered, playerLevel: newLevel });
+    this.equipment.forEach((eq) => eq.setPlayerLevel(newLevel));
+  };
+
   private onQuitWorkout = () => {
     if (!this.activeEquipment) return;
     this.activeEquipment.quitWorkout();
@@ -93,7 +112,9 @@ export class HomeScene extends Phaser.Scene {
   }
 
   init(data: HomeSceneInitData) {
-    this.initData = data;
+    // Same source as GymScene: the registry, since scene switches pass no data.
+    const registered = (this.registry.get("playerData") as HomeSceneInitData | undefined) ?? {};
+    this.initData = { ...registered, ...(data ?? {}) };
   }
 
   create() {
@@ -117,6 +138,7 @@ export class HomeScene extends Phaser.Scene {
         scene: this, x: cfg.x, y: cfg.y,
         id: cfg.id, name: cfg.name, textureKey: cfg.tex,
         xpCost: cfg.xpCost,
+        playerLevel: this.initData.playerLevel ?? 1,
         tokenReward: cfg.tokens, intensity: cfg.intensity,
       });
       this.equipment.push(eq);
@@ -140,11 +162,14 @@ export class HomeScene extends Phaser.Scene {
       transformationStage: this.initData.playerTransformationStage ?? 0,
     });
 
-    this.cameras.main.startFollow(this.player, true, 0.1, 0.1);
+    // Follows the player, can scroll under the HUD overlays, and pans on the
+    // mouse wheel — see CameraRig.
+    this.cameraRig = new CameraRig(this, this.cameras.main, this.player, W, H);
     this.cameras.main.fadeIn(400, 12, 11, 7);
 
     this.controller = new PlayerController(this, this.player);
-    this.controller.onInteractCallback = (wx, wy) => this.tryInteract(wx, wy);
+    this.controller.onTapCallback = (wx, wy) => this.handleTap(wx, wy);
+    this.controller.onInteractKey = () => this.interactNearby();
 
     this.incomeSystem = new IncomeSystem(this);
 
@@ -172,10 +197,12 @@ export class HomeScene extends Phaser.Scene {
     EventBus.off("workout:complete", this.onWorkoutComplete);
     EventBus.off("scene:switch", this.onSceneSwitch);
     EventBus.off("hud:quit_workout", this.onQuitWorkout);
+    EventBus.off("player:level_up", this.onLevelUp);
 
     EventBus.on("workout:complete", this.onWorkoutComplete);
     EventBus.on("scene:switch", this.onSceneSwitch);
     EventBus.on("hud:quit_workout", this.onQuitWorkout);
+    EventBus.on("player:level_up", this.onLevelUp);
 
     EventBus.emit("scene:ready", { name: "HomeScene" });
 
@@ -285,35 +312,66 @@ export class HomeScene extends Phaser.Scene {
     this.rgbStrip.fillStyle(0xffffff, 0.4).fillRect(16, y, W - 32, 1);
   }
 
-  private tryInteract(worldX: number, worldY: number) {
-    void worldX; void worldY;
-    for (const eq of this.equipment) {
-      const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, eq.x, eq.y);
-      if (dist < 70 && !eq.isOccupied) {
-        this.player.x = eq.x;
-        this.player.y = eq.y + 50;
-        this.player.setPlayerState("WORKING_OUT");
-        this.activeEquipment = eq;
-        eq.startWorkout(20_000);
-        // Zoom pulse on activation
-        this.tweens.add({
-          targets: this.cameras.main, zoom: 1.08, duration: 280, ease: "Back.easeOut",
-          onComplete: () => {
-            this.tweens.add({ targets: this.cameras.main, zoom: 1.0, duration: 450, ease: "Sine.easeOut" });
-          },
-        });
-        EventBus.emit("workout:started", { equipmentId: eq.equipId, intensity: eq.intensity });
-        return;
-      }
-    }
+  /** Everything in the room the player can use right now, and what using it does. */
+  private interactables(): Interactable[] {
+    return [
+      ...this.equipment.map((eq) => ({
+        x: eq.x, y: eq.y, reach: 70,
+        available: () => !eq.isOccupied,
+        use: () => this.startWorkout(eq),
+      })),
+      ...this.recoveryProps.map((prop) => ({
+        x: prop.x, y: prop.y, reach: 70,
+        available: () => prop.isReady(),
+        use: () => this.useRecoveryProp(prop),
+      })),
+    ];
+  }
 
-    for (const prop of this.recoveryProps) {
-      const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, prop.x, prop.y);
-      if (dist < 70 && prop.isReady()) {
-        this.useRecoveryProp(prop);
+  /** Tap something to walk over and use it; tapping empty floor does nothing. */
+  private handleTap(worldX: number, worldY: number) {
+    if (this.activeEquipment) return; // mid-workout: taps are ignored
+    const target = pickTapTarget(this.interactables(), worldX, worldY);
+    if (!target) return;
+
+    pingTarget(this, target.x, target.y);
+    const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, target.x, target.y);
+    if (dist < target.reach) {
+      target.use();
+      return;
+    }
+    this.controller.walkTo(target.x, target.y + STAND_OFFSET, () => {
+      if (target.available()) target.use();
+    });
+  }
+
+  /** E / Space: use whatever is within reach of the player. */
+  private interactNearby() {
+    if (this.activeEquipment) return;
+    for (const target of this.interactables()) {
+      const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, target.x, target.y);
+      if (dist < target.reach && target.available()) {
+        target.use();
         return;
       }
     }
+  }
+
+  private startWorkout(eq: Equipment) {
+    if (eq.isOccupied) return;
+    this.player.x = eq.x;
+    this.player.y = eq.y + 50;
+    this.player.setPlayerState("WORKING_OUT");
+    this.activeEquipment = eq;
+    eq.startWorkout(20_000);
+    // Zoom pulse on activation
+    this.tweens.add({
+      targets: this.cameras.main, zoom: 1.08, duration: 280, ease: "Back.easeOut",
+      onComplete: () => {
+        this.tweens.add({ targets: this.cameras.main, zoom: 1.0, duration: 450, ease: "Sine.easeOut" });
+      },
+    });
+    EventBus.emit("workout:started", { equipmentId: eq.equipId, intensity: eq.intensity });
   }
 
   private async useRecoveryProp(prop: RecoveryProp) {
@@ -348,6 +406,7 @@ export class HomeScene extends Phaser.Scene {
 
   update(_time: number, delta: number) {
     this.controller.update(delta);
+    this.cameraRig.update();
     // Only tick the player's own active equipment — mirrors GymScene, and keeps
     // activeEquipment accurate for quitWorkout() to target.
     if (this.activeEquipment) {
@@ -384,7 +443,9 @@ export class HomeScene extends Phaser.Scene {
     EventBus.off("workout:complete", this.onWorkoutComplete);
     EventBus.off("scene:switch", this.onSceneSwitch);
     EventBus.off("hud:quit_workout", this.onQuitWorkout);
+    EventBus.off("player:level_up", this.onLevelUp);
     this.controller.destroy();
+    this.cameraRig?.destroy();
     this.dustEmitter?.destroy();
   }
 }

@@ -1,17 +1,25 @@
 import Phaser from "phaser";
 import { Player } from "@/lib/game/entities/Player";
-import { PlayerController } from "@/lib/game/systems/PlayerController";
+import {
+  PlayerController,
+  pickTapTarget,
+  pingTarget,
+  STAND_OFFSET,
+  type Interactable,
+} from "@/lib/game/systems/PlayerController";
 import { NpcManager } from "@/lib/game/systems/NpcManager";
 import { IncomeSystem } from "@/lib/game/systems/IncomeSystem";
 import { EventBus } from "@/lib/game/EventBus";
 import { Equipment } from "@/lib/game/entities/Equipment";
 import { RecoveryProp } from "@/lib/game/entities/RecoveryProp";
+import { CameraRig } from "@/lib/game/systems/CameraRig";
 import {
   equipmentAvailableForTier,
   equipmentSpec,
   equipmentTokenYield,
   amenitySpec,
   standardAmenities,
+  floorOrder,
 } from "@/lib/game/engine";
 
 // The floor is whatever the gym actually owns (passed in from the server). A
@@ -26,13 +34,31 @@ export interface GymEquipmentInit {
   tokens: number;
 }
 
-// Equipment is laid out on a 4-wide grid across the weight and cardio zones.
-// Four rows of four covers the 16 pieces a tier-5 gym can hold, and the last
-// row still sits clear of the player spawn and the collection point.
+// ─── Floor plan ──────────────────────────────────────────────────────────────
+// Scenes lay out in a fixed 480-wide logical space (see PhaserGame). Top to
+// bottom: the back wall with windows onto the city, the training floor (a 4×4
+// equipment grid), the lounge where amenities live, and the entrance with
+// reception. The wall and training floor are fixed; the lounge and entrance are
+// anchored to the bottom, so a taller screen simply gets a longer walkway.
+
+const BACK_WALL_HEIGHT = 98;
+/** Window openings in the back wall — the skyline shows through these. */
+const WINDOWS = [
+  { x: 28, w: 84 }, { x: 148, w: 84 }, { x: 248, w: 84 }, { x: 368, w: 84 },
+];
+const WINDOW_Y = 65;
+const WINDOW_H = 30;
+
 const EQUIPMENT_ORIGIN = { x: 95, y: 150 };
 const EQUIPMENT_SPACING = { x: 100, y: 105 };
 const EQUIPMENT_PER_ROW = 4;
 const EQUIPMENT_MAX_ROWS = 4;
+/** The last row's name labels end at y=511. */
+const TRAINING_FLOOR_BOTTOM = 514;
+
+/** Lounge spans from here to the entrance; both are measured up from the bottom. */
+const LOUNGE_FROM_BOTTOM = 290;
+const ENTRANCE_FROM_BOTTOM = 92;
 
 function equipmentSlot(index: number): { x: number; y: number } {
   const row = Math.floor(index / EQUIPMENT_PER_ROW);
@@ -42,7 +68,11 @@ function equipmentSlot(index: number): { x: number; y: number } {
   };
 }
 
-/** Resolve the pieces to render — the gym's own floor, or the tier-1 default. */
+/**
+ * Resolve the pieces to render — the gym's own floor, or the tier-1 default —
+ * in floor order (strength at the back, cardio toward the front), the same
+ * order the dashboard tiles use.
+ */
 function resolveGymEquipment(owned?: GymEquipmentInit[]) {
   const known = (owned ?? []).filter((piece) => !!equipmentSpec(piece.type));
 
@@ -59,7 +89,7 @@ function resolveGymEquipment(owned?: GymEquipmentInit[]) {
         }));
 
   // Only what fits on the floor is placed; beyond that pieces would stack.
-  return pieces.slice(0, EQUIPMENT_PER_ROW * EQUIPMENT_MAX_ROWS).map((piece, index) => {
+  return floorOrder(pieces).slice(0, EQUIPMENT_PER_ROW * EQUIPMENT_MAX_ROWS).map((piece, index) => {
     const spec = equipmentSpec(piece.type)!;
     return {
       ...equipmentSlot(index),
@@ -70,44 +100,67 @@ function resolveGymEquipment(owned?: GymEquipmentInit[]) {
       tokens: piece.tokens || equipmentTokenYield(spec, piece.level),
       intensity: spec.intensity,
       level: piece.level,
+      grade: spec.grade,
     };
   });
 }
 
-/** Amenities ring the equipment grid: a band along the top, another below it. */
-const AMENITY_SLOTS: Array<{ x: number; y: number }> = [
-  { x: 55, y: 58 }, { x: 145, y: 58 }, { x: 235, y: 58 }, { x: 325, y: 58 }, { x: 415, y: 58 },
-  { x: 55, y: 535 }, { x: 145, y: 535 }, { x: 235, y: 535 }, { x: 325, y: 535 }, { x: 415, y: 535 },
-];
+/** x positions for `n` props centred on the floor, 90px apart. */
+function centredRow(n: number, W: number): number[] {
+  return Array.from({ length: n }, (_, i) => W / 2 + (i - (n - 1) / 2) * 90);
+}
+
+// Row B keeps the middle clear: it is the walkway up from the entrance. Filled
+// inside-out so a gym with one room still looks balanced.
+const ROW_B_X = [150, 330, 60, 420];
+
+const AMENITY_KIND_ORDER: Record<string, number> = { HYGIENE: 0, REFRESHMENT: 1, STORAGE: 2, ROOM: 3 };
 
 /**
- * Every gym shows its standard fittings — the water dispenser and shower — plus
- * whatever the owner has installed. Lockers and other zero-XP facilities are
- * placed on the floor but are not interactable.
+ * Lay out the lounge. Every gym has its standard fittings — the water dispenser
+ * and shower — plus whatever the owner has installed. Rooms (yoga studio,
+ * sauna, pool) always take row B, where there is space to wall them in; the
+ * rest fill row A and overflow behind the rooms. Nine props fit, which is the
+ * most a tier-5 gym can hold (2 standard + 7 bought).
  */
-function resolveGymAmenities(installed?: string[]) {
-  const types = [
-    ...standardAmenities().map((spec) => spec.type),
-    ...(installed ?? []).filter((type) => {
-      const spec = amenitySpec(type);
-      return !!spec && !spec.standard;
-    }),
+function resolveGymAmenities(W: number, H: number, installed?: string[]) {
+  const specs = [
+    ...standardAmenities(),
+    ...(installed ?? [])
+      .map((type) => amenitySpec(type))
+      .filter((spec): spec is NonNullable<typeof spec> => !!spec && !spec.standard),
+  ]
+    .map((spec, index) => ({ spec, index }))
+    .sort((a, b) => AMENITY_KIND_ORDER[a.spec.kind] - AMENITY_KIND_ORDER[b.spec.kind] || a.index - b.index)
+    .map(({ spec }) => spec);
+
+  const rooms = specs.filter((spec) => spec.kind === "ROOM");
+  const others = specs.filter((spec) => spec.kind !== "ROOM");
+
+  const rowAY = H - 236;
+  const rowBY = H - 136;
+  const rowA = others.slice(0, 5);
+  const rowB = [...rooms, ...others.slice(5)].slice(0, ROW_B_X.length);
+  const rowAX = centredRow(rowA.length, W);
+
+  const placed = [
+    ...rowA.map((spec, i) => ({ spec, x: rowAX[i], y: rowAY })),
+    ...rowB.map((spec, i) => ({ spec, x: ROW_B_X[i], y: rowBY })),
   ];
 
-  return types.slice(0, AMENITY_SLOTS.length).map((type, index) => {
-    const spec = amenitySpec(type)!;
-    return {
-      ...AMENITY_SLOTS[index],
-      id: spec.type,
-      label: spec.name,
-      verb: spec.verb,
-      tex: spec.tex,
-      xpGain: spec.xpGain,
-      cooldownMs: spec.cooldownMs,
-      accentColor: spec.accentColor,
-      usable: spec.xpGain > 0,
-    };
-  });
+  return placed.map(({ spec, x, y }) => ({
+    x,
+    y,
+    id: spec.type,
+    kind: spec.kind,
+    label: spec.name,
+    verb: spec.verb,
+    tex: spec.tex,
+    xpGain: spec.xpGain,
+    cooldownMs: spec.cooldownMs,
+    accentColor: spec.accentColor,
+    usable: spec.xpGain > 0,
+  }));
 }
 
 export interface GymSceneInitData {
@@ -118,6 +171,12 @@ export interface GymSceneInitData {
   overflowXp?: number;
   gymReputation?: number;
   gymTier?: number;
+  /** The player's level — workouts cost more as it rises (see workoutXpCost). */
+  playerLevel?: number;
+  /** Tier display name ("Iron Pit") — shown on the neon sign. */
+  gymTierName?: string;
+  /** False when the player belongs to no gym — BootScene then starts at home. */
+  hasGym?: boolean;
   /** The equipment actually installed at the player's gym. */
   gymEquipment?: GymEquipmentInit[];
   /** Amenity catalog keys the player's gym has bought (standard fittings are implicit). */
@@ -132,6 +191,7 @@ export class GymScene extends Phaser.Scene {
   private npcManager!: NpcManager;
   private incomeSystem!: IncomeSystem;
   private camera!: Phaser.Cameras.Scene2D.Camera;
+  private cameraRig!: CameraRig;
   private activeEquipment: Equipment | null = null;
   private initData: GymSceneInitData = {};
   // Guards shutdown() against running twice when both SHUTDOWN and DESTROY fire.
@@ -174,6 +234,15 @@ export class GymScene extends Phaser.Scene {
     }
   };
 
+  // Workouts cost more at higher levels; re-price every machine when the HUD
+  // reports a level-up, and remember it for the next scene start.
+  private onLevelUp = ({ newLevel }: { newLevel: number }) => {
+    this.initData.playerLevel = newLevel;
+    const registered = this.registry.get("playerData") as Record<string, unknown> | undefined;
+    if (registered) this.registry.set("playerData", { ...registered, playerLevel: newLevel });
+    this.equipment.forEach((eq) => eq.setPlayerLevel(newLevel));
+  };
+
   private onQuitWorkout = () => {
     if (!this.activeEquipment) return;
     this.activeEquipment.quitWorkout();
@@ -201,7 +270,10 @@ export class GymScene extends Phaser.Scene {
   }
 
   init(data: GymSceneInitData) {
-    this.initData = data;
+    // PhaserGame stores the player and gym in the registry; scene.start() from
+    // BootScene or a scene switch passes nothing, so read it from there.
+    const registered = (this.registry.get("playerData") as GymSceneInitData | undefined) ?? {};
+    this.initData = { ...registered, ...(data ?? {}) };
   }
 
   create() {
@@ -219,7 +291,7 @@ export class GymScene extends Phaser.Scene {
     this.activeEquipment = null;
 
     // ── Parallax background (city through windows) ───────────────────────────
-    this.drawParallaxBackground(W, H);
+    this.drawParallaxBackground(W);
 
     // ── Main gym layout ───────────────────────────────────────────────────────
     this.cameras.main.setBackgroundColor(0x09090f);
@@ -229,11 +301,10 @@ export class GymScene extends Phaser.Scene {
     this.addGymProps(W, H);
 
     // ── Zone labels ───────────────────────────────────────────────────────────
-    // Placed in the gaps between equipment rows (see equipmentSlot) so a full
-    // tier-5 floor does not print machines over the zone names.
-    this.addZoneLabel("⚡ WEIGHT ZONE", 260, 110);
-    this.addZoneLabel("🏃 CARDIO ZONE", 220, 205);
-    this.addZoneLabel("🧾 RECEPTION", 60, 620);
+    // Each sits in a verified gap: under the windows and above the first row of
+    // grade badges, and above the lounge's first row of amenities.
+    this.addZoneLabel("⚡ TRAINING FLOOR", W / 2, 104);
+    this.addZoneLabel("🛋️ LOUNGE", W / 2, H - 278);
 
     // ── Equipment ─────────────────────────────────────────────────────────────
     resolveGymEquipment(this.initData.gymEquipment).forEach((cfg) => {
@@ -243,15 +314,29 @@ export class GymScene extends Phaser.Scene {
         id: cfg.id, name: cfg.name,
         textureKey: cfg.tex,
         xpCost: cfg.xpCost,
+        playerLevel: this.initData.playerLevel ?? 1,
         tokenReward: cfg.tokens,
         intensity: cfg.intensity,
         level: cfg.level,
+        grade: cfg.grade,
       });
       this.equipment.push(eq);
     });
 
+    // ── Open bays ─────────────────────────────────────────────────────────────
+    // Faint pads where the gym could install more at its current tier, so a
+    // young gym's floor reads as room to grow rather than as empty space.
+    if (this.initData.gymEquipment?.length) {
+      const capacity = equipmentAvailableForTier(this.initData.gymTier ?? 1).length;
+      for (let i = this.equipment.length; i < Math.min(capacity, EQUIPMENT_PER_ROW * EQUIPMENT_MAX_ROWS); i++) {
+        this.drawOpenBay(equipmentSlot(i));
+      }
+    }
+
     // ── Amenities ─────────────────────────────────────────────────────────────
-    resolveGymAmenities(this.initData.gymAmenities).forEach((cfg) => {
+    resolveGymAmenities(W, H, this.initData.gymAmenities).forEach((cfg) => {
+      // Rooms are walled off from the lounge, with their own floor and ambience.
+      if (cfg.kind === "ROOM") this.drawRoomEnclosure(cfg.x, cfg.y, cfg.accentColor, cfg.id);
       const prop = new RecoveryProp({
         scene: this,
         x: cfg.x, y: cfg.y,
@@ -266,7 +351,8 @@ export class GymScene extends Phaser.Scene {
     });
 
     // ── Cash collection point ──────────────────────────────────────────────────
-    this.cashPoint = this.add.container(80, H - 100);
+    // Sits on the reception desk by the entrance (see addFrontOfHouse).
+    this.cashPoint = this.add.container(330, H - 56).setDepth(H - 40);
     this.cashGlow = this.add.arc(0, 0, 32, 0, 360, false, 0xffd700, 0).setDepth(-1);
     const cashHalo = this.add.arc(0, 0, 44, 0, 360, false, 0xffd700, 0).setDepth(-2);
     const cashLabel = this.add.text(0, 20, "💰 COLLECT", {
@@ -287,13 +373,13 @@ export class GymScene extends Phaser.Scene {
     });
 
     // ── Particle systems ──────────────────────────────────────────────────────
-    this.setupParticles(W, H);
+    this.setupParticles(W);
 
     // ── Player ────────────────────────────────────────────────────────────────
     this.player = new Player({
       scene: this,
       x: W / 2,
-      y: H - 100,
+      y: H - 58,
       bodyType: this.initData.playerBodyType ?? "AVERAGE",
       name: this.initData.playerName ?? "You",
       transformationStage: this.initData.playerTransformationStage ?? 0,
@@ -301,26 +387,23 @@ export class GymScene extends Phaser.Scene {
 
     // ── Camera ────────────────────────────────────────────────────────────────
     this.camera = this.cameras.main;
-    this.camera.startFollow(this.player, true, 0.08, 0.08);
     this.camera.setZoom(1.0);
-
-    // Smooth zoom on scroll / pinch
-    this.input.on("wheel", (_: unknown, __: unknown, ___: unknown, dy: number) => {
-      const target = Phaser.Math.Clamp(this.camera.zoom - dy * 0.001, 0.65, 2.0);
-      this.tweens.add({ targets: this.camera, zoom: target, duration: 150, ease: "Sine.easeOut" });
-    });
+    // Follows the player, can scroll under the HUD overlays, and pans on the
+    // mouse wheel — see CameraRig.
+    this.cameraRig = new CameraRig(this, this.camera, this.player, W, H);
 
     // ── Player Controller ─────────────────────────────────────────────────────
     this.controller = new PlayerController(this, this.player);
-    this.controller.onInteractCallback = (wx, wy) => this.tryInteract(wx, wy);
+    this.controller.onTapCallback = (wx, wy) => this.handleTap(wx, wy);
+    this.controller.onInteractKey = () => this.interactNearby();
 
     // ── Systems ───────────────────────────────────────────────────────────────
     this.incomeSystem = new IncomeSystem(this);
     this.npcManager = new NpcManager(
       this,
       this.equipment,
-      { x: W / 2, y: 30 },
-      { x: W / 2, y: 30 },
+      { x: W / 2, y: H - 12 },
+      { x: W / 2, y: H - 12 },
       this.initData.gymReputation ?? 50
     );
 
@@ -334,11 +417,13 @@ export class GymScene extends Phaser.Scene {
     EventBus.off("workout:complete", this.onWorkoutComplete);
     EventBus.off("scene:switch", this.onSceneSwitch);
     EventBus.off("hud:quit_workout", this.onQuitWorkout);
+    EventBus.off("player:level_up", this.onLevelUp);
 
     EventBus.on("npc:paid", this.onNpcPaid);
     EventBus.on("workout:complete", this.onWorkoutComplete);
     EventBus.on("scene:switch", this.onSceneSwitch);
     EventBus.on("hud:quit_workout", this.onQuitWorkout);
+    EventBus.on("player:level_up", this.onLevelUp);
 
     // Fade in on scene start
     this.cameras.main.fadeIn(400, 9, 9, 15);
@@ -355,209 +440,344 @@ export class GymScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.DESTROY, this.shutdown, this);
   }
 
-  // ── Parallax city background ────────────────────────────────────────────────
-  private drawParallaxBackground(W: number, H: number) {
+  // ── City skyline (seen through the back-wall windows) ───────────────────────
+  // Drawn behind everything with a light parallax; the back wall is painted
+  // around its windows, so this is only ever seen through them.
+  private drawParallaxBackground(W: number) {
     const bg = this.add.graphics().setScrollFactor(0.15).setDepth(-10);
+    const top = WINDOW_Y - 6;
+    const base = WINDOW_Y + WINDOW_H + 4;
 
-    // Sky gradient (deep purple → dark navy)
-    bg.fillGradientStyle(0x0a0520, 0x0a0520, 0x0d1535, 0x0d1535, 1);
-    bg.fillRect(0, 0, W, H * 0.4);
+    // Dusk sky: deep violet into navy
+    bg.fillGradientStyle(0x1a0b3a, 0x1a0b3a, 0x0d1535, 0x0d1535, 1);
+    bg.fillRect(-60, top, W + 120, base - top);
 
-    // City building silhouettes (window-visible area)
-    const buildingColors = [0x0e0e1a, 0x111120, 0x0c0c18];
-    const buildings = [
-      { x: 10, w: 30, h: 55 }, { x: 45, w: 20, h: 40 }, { x: 70, w: 35, h: 65 },
-      { x: 110, w: 25, h: 50 }, { x: 140, w: 40, h: 70 }, { x: 185, w: 18, h: 38 },
-      { x: 210, w: 30, h: 60 }, { x: 250, w: 22, h: 45 }, { x: 280, w: 38, h: 72 },
-      { x: 325, w: 26, h: 52 }, { x: 360, w: 32, h: 58 }, { x: 400, w: 20, h: 42 },
-    ];
-    buildings.forEach((b, i) => {
-      bg.fillStyle(buildingColors[i % 3], 1);
-      bg.fillRect(b.x, H * 0.4 - b.h, b.w, b.h);
-      // Lit windows
-      for (let wy = b.h - 10; wy > 8; wy -= 10) {
-        for (let wx = 4; wx < b.w - 4; wx += 8) {
-          if (Math.random() > 0.55) {
-            const winColor = Math.random() > 0.7 ? 0xffeedd : 0x88aaff;
-            bg.fillStyle(winColor, 0.35);
-            bg.fillRect(b.x + wx, H * 0.4 - wy - 2, 4, 5);
+    // Moon, with a soft halo
+    bg.fillStyle(0xfff8e7, 0.06).fillCircle(W * 0.78, WINDOW_Y + 9, 12);
+    bg.fillStyle(0xfff8e7, 0.55).fillCircle(W * 0.78, WINDOW_Y + 9, 4);
+
+    // Two depths of buildings: a hazy far row, then a darker near row with lit
+    // windows. Window lights are seeded so the skyline is the same every visit.
+    let seed = 7;
+    const rand = () => {
+      seed = (seed * 16807) % 2147483647;
+      return seed / 2147483647;
+    };
+    for (let x = -60; x < W + 60; ) {
+      const w = 14 + Math.floor(rand() * 18);
+      const h = 8 + Math.floor(rand() * 12);
+      bg.fillStyle(0x161a33, 1).fillRect(x, base - h, w, h);
+      x += w + 2;
+    }
+    for (let x = -60; x < W + 60; ) {
+      const w = 16 + Math.floor(rand() * 22);
+      const h = 12 + Math.floor(rand() * 16);
+      bg.fillStyle(0x0b0c18, 1).fillRect(x, base - h, w, h);
+      for (let wy = base - h + 3; wy < base - 3; wy += 5) {
+        for (let wx = x + 3; wx < x + w - 3; wx += 5) {
+          if (rand() > 0.62) {
+            bg.fillStyle(rand() > 0.7 ? 0xffe4b5 : 0x8fb3ff, 0.55).fillRect(wx, wy, 2, 2);
           }
         }
       }
-    });
-
-    // Moon / street glow
-    bg.fillStyle(0xfff8e7, 0.08).fillCircle(W * 0.8, H * 0.1, 18);
-    bg.fillStyle(0xfff8e7, 0.04).fillCircle(W * 0.8, H * 0.1, 28);
+      x += w + 3;
+    }
   }
 
   // ── Main gym floor & walls ─────────────────────────────────────────────────
   private drawGymLayout(W: number, H: number) {
     const g = this.add.graphics();
+    const loungeTop = H - LOUNGE_FROM_BOTTOM;
+    const entranceTop = H - ENTRANCE_FROM_BOTTOM;
 
-    // Outer dark background
-    g.fillStyle(0x09090f).fillRect(0, 0, W, H);
+    // ── Back wall, painted around the window openings ──────────────────────
+    const wall = 0x0e0d18;
+    g.fillStyle(wall, 1);
+    g.fillRect(0, 0, W, WINDOW_Y);
+    g.fillRect(0, WINDOW_Y + WINDOW_H, W, BACK_WALL_HEIGHT - WINDOW_Y - WINDOW_H);
+    let cursor = 0;
+    for (const win of WINDOWS) {
+      g.fillRect(cursor, WINDOW_Y, win.x - cursor, WINDOW_H);
+      cursor = win.x + win.w;
+    }
+    g.fillRect(cursor, WINDOW_Y, W - cursor, WINDOW_H);
 
-    // Main workout floor
-    g.fillStyle(0x14141e).fillRect(20, 20, W - 40, H * 0.57);
+    // Acoustic panelling above the windows
+    g.lineStyle(1, 0x191729, 1);
+    for (let x = 20; x < W; x += 40) g.lineBetween(x, 6, x, WINDOW_Y - 6);
 
-    // Subtle grid
-    g.lineStyle(1, 0x1a1a28, 0.7);
-    for (let x = 20; x < W; x += 44) g.lineBetween(x, 20, x, H * 0.57);
-    for (let y = 20; y < H * 0.57; y += 44) g.lineBetween(20, y, W - 20, y);
-
-    // Floor accent tiles (every other cell slightly lighter)
-    g.fillStyle(0x16162a, 0.5);
-    for (let x = 20; x < W - 20; x += 88) {
-      for (let y = 20; y < H * 0.57; y += 88) {
-        g.fillRect(x, y, 44, 44);
-      }
+    // Window frames, mullions and a lit sill
+    for (const win of WINDOWS) {
+      g.lineStyle(2, 0x2c2945, 1).strokeRect(win.x, WINDOW_Y, win.w, WINDOW_H);
+      g.lineStyle(1, 0x2c2945, 0.9).lineBetween(win.x + win.w / 2, WINDOW_Y, win.x + win.w / 2, WINDOW_Y + WINDOW_H);
+      g.fillStyle(0x6c47ff, 0.25).fillRect(win.x - 2, WINDOW_Y + WINDOW_H, win.w + 4, 2);
     }
 
-    // Reception area
-    g.fillStyle(0x0f0d18).fillRect(20, H * 0.62, W * 0.38, H * 0.34);
-    g.lineStyle(1, 0x1a1428, 0.5);
-    for (let y = H * 0.62; y < H * 0.96; y += 24) g.lineBetween(20, y, W * 0.38 + 20, y);
+    // Everything below the wall
+    g.fillStyle(0x08080e, 1).fillRect(0, BACK_WALL_HEIGHT, W, H - BACK_WALL_HEIGHT);
+    // Neon skirting where the wall meets the floor
+    g.fillStyle(0x6c47ff, 0.45).fillRect(0, BACK_WALL_HEIGHT - 2, W, 2);
 
-    // Zone divider line
-    g.lineStyle(2, 0x6c47ff, 0.25);
-    g.lineBetween(22, H * 0.3, W - 22, H * 0.3);
-    // Divider label glow
-    g.fillStyle(0x6c47ff, 0.04).fillRect(22, H * 0.28, W - 44, 4);
+    // ── Training floor: rubber matting, weights at the back, cardio in front ─
+    const tf = { x: 16, y: BACK_WALL_HEIGHT + 2, w: W - 32, h: TRAINING_FLOOR_BOTTOM - BACK_WALL_HEIGHT - 2 };
+    g.fillStyle(0x13131d, 1).fillRect(tf.x, tf.y, tf.w, tf.h);
+    g.fillStyle(0x17172a, 0.6);
+    for (let x = tf.x; x < tf.x + tf.w; x += 88) {
+      for (let y = tf.y; y < tf.y + tf.h; y += 88) g.fillRect(x, y, 44, 44);
+    }
+    g.lineStyle(1, 0x1b1b2c, 0.8);
+    for (let x = tf.x; x <= tf.x + tf.w; x += 44) g.lineBetween(x, tf.y, x, tf.y + tf.h);
+    for (let y = tf.y; y <= tf.y + tf.h; y += 44) g.lineBetween(tf.x, y, tf.x + tf.w, y);
+    g.fillStyle(0x6c47ff, 0.04).fillRect(tf.x, tf.y, tf.w, tf.h / 2);
+    g.fillStyle(0x00d4aa, 0.035).fillRect(tf.x, tf.y + tf.h / 2, tf.w, tf.h / 2);
+    g.lineStyle(2, 0x6c47ff, 0.45).strokeRect(tf.x, tf.y, tf.w, tf.h);
+    g.lineStyle(1, 0x4a30cc, 0.2).strokeRect(tf.x + 3, tf.y + 3, tf.w - 6, tf.h - 6);
 
-    // Outer wall border with neon accent
-    g.lineStyle(2, 0x6c47ff, 0.4).strokeRect(20, 20, W - 40, H * 0.57);
-    // Inner border highlight
-    g.lineStyle(1, 0x4a30cc, 0.2).strokeRect(22, 22, W - 44, H * 0.57 - 4);
+    // ── Walkway: a runner carpet, only where a tall screen leaves a gap ─────
+    const runner = { x: W / 2 - 34, w: 68 };
+    if (loungeTop > TRAINING_FLOOR_BOTTOM + 8) {
+      // Corridor flooring either side, so the gap reads as a hallway, not void
+      const gap = loungeTop - TRAINING_FLOOR_BOTTOM;
+      g.fillStyle(0x0f0f18, 1).fillRect(16, TRAINING_FLOOR_BOTTOM, W - 32, gap);
+      g.lineStyle(1, 0x171723, 1);
+      for (let y = TRAINING_FLOOR_BOTTOM + 32; y < loungeTop; y += 32) g.lineBetween(16, y, W - 16, y);
+      for (let x = 48; x < W - 16; x += 64) g.lineBetween(x, TRAINING_FLOOR_BOTTOM, x, loungeTop);
+      g.lineStyle(1, 0x2a2840, 1).strokeRect(16, TRAINING_FLOOR_BOTTOM, W - 32, gap);
+      g.fillStyle(0x1c1530, 1).fillRect(runner.x, TRAINING_FLOOR_BOTTOM, runner.w, loungeTop - TRAINING_FLOOR_BOTTOM);
+      g.fillStyle(0xa78bfa, 0.35);
+      g.fillRect(runner.x + 4, TRAINING_FLOOR_BOTTOM, 2, loungeTop - TRAINING_FLOOR_BOTTOM);
+      g.fillRect(runner.x + runner.w - 6, TRAINING_FLOOR_BOTTOM, 2, loungeTop - TRAINING_FLOOR_BOTTOM);
+    }
 
-    // Left mirror wall (reflective surface)
-    g.fillStyle(0x1a2035, 0.55).fillRect(21, 24, 22, H * 0.55 - 10);
-    // Mirror frame
-    g.lineStyle(2, 0x4cc9f0, 0.45).strokeRect(21, 24, 22, H * 0.55 - 10);
-    // Mirror sheen streak
-    g.fillStyle(0xffffff, 0.05).fillRect(25, 28, 6, H * 0.55 - 18);
-    g.fillStyle(0xffffff, 0.02).fillRect(29, 28, 3, H * 0.55 - 18);
+    // ── Lounge: warm wood planks ────────────────────────────────────────────
+    const lf = { x: 16, y: loungeTop, w: W - 32, h: entranceTop - loungeTop - 2 };
+    g.fillStyle(0x1a1510, 1).fillRect(lf.x, lf.y, lf.w, lf.h);
+    g.lineStyle(1, 0x241c14, 1);
+    for (let y = lf.y + 16, row = 0; y < lf.y + lf.h; y += 16, row++) {
+      g.lineBetween(lf.x, y, lf.x + lf.w, y);
+      // Staggered plank joints
+      for (let x = lf.x + (row % 2 ? 30 : 60); x < lf.x + lf.w; x += 90) g.lineBetween(x, y - 16, x, y);
+    }
+    g.fillStyle(0xf59e0b, 0.03).fillRect(lf.x, lf.y, lf.w, lf.h);
+    g.lineStyle(2, 0xf59e0b, 0.3).strokeRect(lf.x, lf.y, lf.w, lf.h);
 
-    // Right accent wall
-    g.fillStyle(0x6c47ff, 0.04).fillRect(W - 43, 24, 20, H * 0.55 - 10);
-    g.lineStyle(1, 0x6c47ff, 0.2).strokeRect(W - 43, 24, 20, H * 0.55 - 10);
+    // ── Entrance: tiled lobby, the runner continuing to the door ────────────
+    const ef = { x: 16, y: entranceTop, w: W - 32, h: ENTRANCE_FROM_BOTTOM - 6 };
+    g.fillStyle(0x101018, 1).fillRect(ef.x, ef.y, ef.w, ef.h);
+    g.lineStyle(1, 0x1a1a26, 1);
+    for (let x = ef.x; x <= ef.x + ef.w; x += 24) g.lineBetween(x, ef.y, x, ef.y + ef.h);
+    for (let y = ef.y; y <= ef.y + ef.h; y += 24) g.lineBetween(ef.x, y, ef.x + ef.w, y);
+    g.fillStyle(0x1c1530, 0.9).fillRect(runner.x, ef.y, runner.w, ef.h);
+    g.lineStyle(2, 0x4cc9f0, 0.25).strokeRect(ef.x, ef.y, ef.w, ef.h);
 
-    // Floor baseboard glow (neon strip along floor border)
-    g.fillStyle(0x6c47ff, 0.08).fillRect(20, H * 0.56, W - 40, 3);
-    g.fillStyle(0x00d4aa, 0.06).fillRect(20, H * 0.62, W * 0.38, 2);
     this.backgroundLayer = g;
   }
 
-  // ── Gym props ──────────────────────────────────────────────────────────────
+  // ── Back-wall decor ────────────────────────────────────────────────────────
   private addGymProps(W: number, H: number) {
     const g = this.add.graphics().setDepth(2);
 
-    // ── Neon sign above entrance ───────────────────────────────────────────
-    const signX = W / 2, signY = 32;
-    this.add.image(signX, signY, "prop_sign_bg").setOrigin(0.5).setDepth(3);
-    this.neonSignText = this.add.text(signX, signY, "💪 GYMPRENUER", {
-      fontFamily: "Inter, sans-serif", fontSize: "11px", fontStyle: "bold",
-      color: "#a78bfa", letterSpacing: 3,
-    }).setOrigin(0.5).setDepth(4);
-
-    // ── TV Screens ─────────────────────────────────────────────────────────
-    const tvPositions = [
-      { x: W - 44, y: 60 }, { x: W - 44, y: 130 },
-    ];
-    tvPositions.forEach((pos) => {
-      this.add.image(pos.x, pos.y, "prop_tv").setOrigin(0.5).setDepth(3);
-    });
-    // Animated TV screen — store reference for update flicker
-    this.tvScreen = this.add.rectangle(W - 44, 64, 42, 24, 0x00d4aa, 0.15).setDepth(4);
-
-    // ── Water Cooler (reception area) ──────────────────────────────────────
-    this.add.image(W * 0.35, H * 0.68, "prop_water").setOrigin(0.5).setDepth(3);
-    // Water dispense drip tween
-    const drip = this.add.arc(W * 0.35, H * 0.68 + 10, 2, 0, 360, false, 0x4cc9f0, 0.6).setDepth(4);
-    this.tweens.add({
-      targets: drip, y: H * 0.68 + 18,
-      alpha: 0, duration: 1200, repeat: -1, delay: 3000,
-    });
-
-    // ── Motivational posters (right wall) ─────────────────────────────────
-    const posters = [
-      { x: W - 28, y: 80,  text: "NO PAIN\nNO GAIN", color: "#ef4444" },
-      { x: W - 28, y: 160, text: "NEVER\nSKIP\nLEG DAY", color: "#f59e0b" },
-    ];
-    posters.forEach((p) => {
-      g.fillStyle(0x1a1a2e, 1).fillRoundedRect(p.x - 16, p.y - 22, 32, 40, 3);
-      g.lineStyle(1, 0x334, 0.5).strokeRoundedRect(p.x - 16, p.y - 22, 32, 40, 3);
-      this.add.text(p.x, p.y, p.text, {
-        fontFamily: "Inter, sans-serif", fontSize: "6px", fontStyle: "bold",
-        color: p.color, align: "center", lineSpacing: 2,
-      }).setOrigin(0.5).setDepth(3);
-    });
-
-    // ── Wall clock ────────────────────────────────────────────────────────
-    const clockX = 54, clockY = 45;
+    // ── Wall clock ─────────────────────────────────────────────────────────
+    const clockX = 44, clockY = 34;
     g.fillStyle(0x1a1a2e, 1).fillCircle(clockX, clockY, 14);
     g.lineStyle(1, 0x6c47ff, 0.6).strokeCircle(clockX, clockY, 14);
-    // Hour markers
     for (let i = 0; i < 12; i++) {
       const a = (i / 12) * Math.PI * 2 - Math.PI / 2;
-      const r = 11;
-      g.fillStyle(0x4a3880, 1).fillCircle(
-        clockX + Math.cos(a) * r, clockY + Math.sin(a) * r, 1.2
-      );
+      g.fillStyle(0x4a3880, 1).fillCircle(clockX + Math.cos(a) * 11, clockY + Math.sin(a) * 11, 1.2);
     }
-    // Clock center
     g.fillStyle(0x6c47ff, 1).fillCircle(clockX, clockY, 2);
-    // Animated clock hand
     this.clockHand = this.add.line(clockX, clockY, 0, 0, 0, -9, 0xa78bfa).setLineWidth(1.5).setDepth(4);
 
-    // ── Towel rack (near entrance) ────────────────────────────────────────
-    g.fillStyle(0x2a2030, 1).fillRoundedRect(W * 0.5 - 24, 22, 48, 8, 4);
-    g.lineStyle(1, 0x6c47ff, 0.3).strokeRoundedRect(W * 0.5 - 24, 22, 48, 8, 4);
-    // Towels
-    const towelColors = [0x4cc9f0, 0xf72585, 0x00d4aa];
-    for (let i = 0; i < 3; i++) {
-      g.fillStyle(towelColors[i], 0.7).fillRoundedRect(W * 0.5 - 18 + i * 14, 24, 10, 5, 2);
-    }
+    // ── Towel rack ─────────────────────────────────────────────────────────
+    g.fillStyle(0x2a2030, 1).fillRoundedRect(92, 30, 52, 8, 4);
+    g.lineStyle(1, 0x6c47ff, 0.3).strokeRoundedRect(92, 30, 52, 8, 4);
+    [0x4cc9f0, 0xf72585, 0x00d4aa].forEach((c, i) => {
+      g.fillStyle(c, 0.75).fillRoundedRect(98 + i * 15, 32, 11, 9, 2);
+    });
 
-    // ── Ambient overhead light cones — mixed neon-arcade palette ───────────
-    const lightPositions = [
-      { x: 140, y: 20, color: 0x6c47ff },  // weight zone — purple
-      { x: 280, y: 20, color: 0xf72585 },  // weight zone — hot pink accent
-      { x: 420, y: 20, color: 0x6c47ff },
-      { x: 140, y: H * 0.3, color: 0x00d4aa },  // cardio zone — teal
-      { x: 280, y: H * 0.3, color: 0x4cc9f0 },  // cardio zone — electric cyan
+    // ── Neon sign: the gym's tier, in name and stars ───────────────────────
+    const tier = Math.min(Math.max(this.initData.gymTier ?? 1, 1), 5);
+    const tierName = (this.initData.gymTierName ?? "Gymprenuer").toUpperCase();
+    const signX = W / 2, signY = 34, signW = 168, signH = 30;
+    g.fillStyle(0x0b0a16, 0.95).fillRoundedRect(signX - signW / 2, signY - signH / 2, signW, signH, 7);
+    g.lineStyle(2, 0x6c47ff, 0.85).strokeRoundedRect(signX - signW / 2, signY - signH / 2, signW, signH, 7);
+    g.lineStyle(6, 0x6c47ff, 0.12).strokeRoundedRect(signX - signW / 2, signY - signH / 2, signW, signH, 7);
+    this.neonSignText = this.add.text(signX, signY - 4, tierName, {
+      fontFamily: "Inter, sans-serif", fontSize: "10px", fontStyle: "bold",
+      color: "#c4b5fd", letterSpacing: 2,
+    }).setOrigin(0.5).setDepth(4);
+    this.add.text(signX, signY + 8, "★".repeat(tier) + "☆".repeat(5 - tier), {
+      fontFamily: "Inter, sans-serif", fontSize: "8px", color: "#ffd700", letterSpacing: 2,
+    }).setOrigin(0.5).setDepth(4);
+
+    // ── TV ─────────────────────────────────────────────────────────────────
+    this.add.image(368, 34, "prop_tv").setOrigin(0.5).setDepth(3);
+    this.tvScreen = this.add.rectangle(368, 38, 42, 24, 0x00d4aa, 0.15).setDepth(4);
+
+    // ── Poster ─────────────────────────────────────────────────────────────
+    g.fillStyle(0x1a1a2e, 1).fillRoundedRect(428, 16, 32, 40, 3);
+    g.lineStyle(1, 0xef4444, 0.5).strokeRoundedRect(428, 16, 32, 40, 3);
+    this.add.text(444, 36, "NO PAIN\nNO GAIN", {
+      fontFamily: "Inter, sans-serif", fontSize: "6px", fontStyle: "bold",
+      color: "#ef4444", align: "center", lineSpacing: 2,
+    }).setOrigin(0.5).setDepth(3);
+
+    // ── Light cones: neon over the training floor, warm over the lounge ────
+    const loungeTop = H - LOUNGE_FROM_BOTTOM;
+    const lights = [
+      { x: 95,  y: BACK_WALL_HEIGHT, color: 0x6c47ff, reach: 210 },
+      { x: 240, y: BACK_WALL_HEIGHT, color: 0xf72585, reach: 210 },
+      { x: 395, y: BACK_WALL_HEIGHT, color: 0x6c47ff, reach: 210 },
+      { x: 150, y: loungeTop,        color: 0xf59e0b, reach: 120 },
+      { x: 330, y: loungeTop,        color: 0xf59e0b, reach: 120 },
     ];
-    const lightG = this.add.graphics().setDepth(1).setAlpha(0.09);
-    lightPositions.forEach((lp) => {
+    const lightG = this.add.graphics().setDepth(1).setAlpha(0.08);
+    lights.forEach((lp) => {
       lightG.fillStyle(lp.color, 1);
-      // Light cone triangle
-      lightG.fillTriangle(
-        lp.x, lp.y,
-        lp.x - 60, lp.y + H * 0.25,
-        lp.x + 60, lp.y + H * 0.25
-      );
-      // Store arc for pulse animation
-      const arc = this.add.arc(lp.x, lp.y + 2, 6, 0, 360, false, lp.color, 0.75).setDepth(2);
+      lightG.fillTriangle(lp.x, lp.y, lp.x - 56, lp.y + lp.reach, lp.x + 56, lp.y + lp.reach);
+      const arc = this.add.arc(lp.x, lp.y + 2, 5, 0, 360, false, lp.color, 0.75).setDepth(2);
       this.ambientLights.push(arc);
     });
 
-    // ── Animated floor glow strips ────────────────────────────────────────
-    const stripG = this.add.graphics().setDepth(0).setAlpha(0.16);
-    // Weight zone accent strip
-    stripG.fillStyle(0x6c47ff, 1).fillRect(20, H * 0.28, W - 40, 2);
-    stripG.fillStyle(0x00d4aa, 1).fillRect(20, H * 0.57, W - 40, 2);
+    // ── Glow strips along the zone boundaries ──────────────────────────────
+    const stripG = this.add.graphics().setDepth(0).setAlpha(0.18);
+    stripG.fillStyle(0x6c47ff, 1).fillRect(16, TRAINING_FLOOR_BOTTOM - 1, W - 32, 2);
+    stripG.fillStyle(0xf59e0b, 1).fillRect(16, loungeTop, W - 32, 2);
     this.tweens.add({
-      targets: stripG, alpha: 0.3,
+      targets: stripG, alpha: 0.32,
       duration: 2000, yoyo: true, repeat: -1, ease: "Sine.easeInOut",
     });
+
+    this.addFrontOfHouse(W, H);
+  }
+
+  // ── Entrance: reception desk, plants, door mat ─────────────────────────────
+  private addFrontOfHouse(W: number, H: number) {
+    const g = this.add.graphics().setDepth(H - 70);
+
+    // Reception desk — the collection point sits on top of it
+    const deskX = 330, deskY = H - 50;
+    g.fillStyle(0x1d1830, 1).fillRoundedRect(deskX - 52, deskY - 17, 104, 34, 6);
+    g.fillStyle(0x2a2245, 1).fillRoundedRect(deskX - 52, deskY - 17, 104, 9, { tl: 6, tr: 6, bl: 0, br: 0 });
+    g.lineStyle(1, 0xffd700, 0.45).strokeRoundedRect(deskX - 52, deskY - 17, 104, 34, 6);
+    g.fillStyle(0xffd700, 0.5).fillRect(deskX - 46, deskY + 12, 92, 2);
+    this.add.text(deskX, H - 14, "🧾 RECEPTION", {
+      fontFamily: "Inter, sans-serif", fontSize: "8px", color: "#6a6a88", letterSpacing: 2,
+    }).setOrigin(0.5).setDepth(H);
+
+    // Potted plants either side of the entrance
+    for (const px of [60, W - 40]) this.drawPlant(g, px, H - 50);
+
+    // Door mat at the threshold
+    g.fillStyle(0x2a2140, 1).fillRoundedRect(W / 2 - 30, H - 17, 60, 10, 3);
+    g.lineStyle(1, 0xa78bfa, 0.4).strokeRoundedRect(W / 2 - 30, H - 17, 60, 10, 3);
+  }
+
+  private drawPlant(g: Phaser.GameObjects.Graphics, x: number, y: number) {
+    // Pot
+    g.fillStyle(0x3a2a20, 1).fillRoundedRect(x - 11, y + 6, 22, 16, 3);
+    g.fillStyle(0x4a3628, 1).fillRect(x - 13, y + 4, 26, 4);
+    // Leaves, layered dark to light
+    g.fillStyle(0x0f5132, 1).fillCircle(x - 7, y - 4, 8).fillCircle(x + 7, y - 4, 8);
+    g.fillStyle(0x146c43, 1).fillCircle(x, y - 10, 9);
+    g.fillStyle(0x1a8754, 0.9).fillCircle(x - 3, y - 14, 5).fillCircle(x + 5, y - 8, 4);
+  }
+
+  private drawOpenBay({ x, y }: { x: number; y: number }) {
+    const g = this.add.graphics().setDepth(y - 40);
+    // Dashed outline traced along the floor ellipse (29 × 8 radii)
+    g.lineStyle(1.5, 0x6c47ff, 0.4);
+    const point = (deg: number) => {
+      const t = Phaser.Math.DegToRad(deg);
+      return { px: x + 29 * Math.cos(t), py: y + 22 + 8 * Math.sin(t) };
+    };
+    for (let a = 0; a < 360; a += 24) {
+      const from = point(a);
+      const to = point(a + 12);
+      g.lineBetween(from.px, from.py, to.px, to.py);
+    }
+    g.fillStyle(0x6c47ff, 0.05).fillEllipse(x, y + 22, 58, 16);
+    this.add.text(x, y + 4, "+ OPEN BAY", {
+      fontFamily: "Inter, sans-serif", fontSize: "7px", color: "#4a4a6a", letterSpacing: 1,
+    }).setOrigin(0.5).setDepth(y - 39);
+  }
+
+  // ── Rooms: yoga studio, sauna, pool ────────────────────────────────────────
+  // Each room gets its own walls with a doorway onto the lounge, a tinted floor
+  // and an ambient effect, so it reads as a separate space rather than a prop.
+  private drawRoomEnclosure(x: number, y: number, color: number, type: string) {
+    const w = 86, h = 84;
+    const left = x - w / 2, top = y - h / 2;
+    const door = 14;
+    const g = this.add.graphics().setDepth(y - 60);
+
+    g.fillStyle(color, 0.1).fillRoundedRect(left, top, w, h, 6);
+
+    if (type === "pool") {
+      // The water itself, with lane ropes
+      g.fillStyle(0x00b4d8, 0.22).fillRoundedRect(left + 8, top + 8, w - 16, h - 30, 4);
+      g.lineStyle(1, 0xcaf0f8, 0.35);
+      for (let ly = top + 20; ly < top + h - 22; ly += 12) g.lineBetween(left + 10, ly, left + w - 10, ly);
+    } else if (type === "sauna") {
+      // Cedar slats
+      g.lineStyle(1, 0x8a5a33, 0.45);
+      for (let ly = top + 8; ly < top + h - 6; ly += 7) g.lineBetween(left + 4, ly, left + w - 4, ly);
+    } else if (type === "yogaroom") {
+      // Mats laid out on the floor
+      g.fillStyle(0xc4b5fd, 0.18);
+      g.fillRoundedRect(left + 10, top + 12, 14, 30, 3).fillRoundedRect(left + w - 24, top + 12, 14, 30, 3);
+    }
+
+    // Walls on three sides; the front wall has a doorway onto the lounge
+    g.lineStyle(2, color, 0.8);
+    g.beginPath();
+    g.moveTo(x - door, top + h);
+    g.lineTo(left, top + h);
+    g.lineTo(left, top);
+    g.lineTo(left + w, top);
+    g.lineTo(left + w, top + h);
+    g.lineTo(x + door, top + h);
+    g.strokePath();
+    g.lineStyle(6, color, 0.12).strokeRoundedRect(left, top, w, h, 6);
+    g.fillStyle(color, 0.95).fillRect(x - door - 1, top + h - 4, 3, 8).fillRect(x + door - 2, top + h - 4, 3, 8);
+
+    if (type === "sauna") {
+      // Steam rising off the stove
+      this.add.particles(x, top + 22, "particle_dust", {
+        x: { min: -26, max: 26 },
+        lifespan: { min: 1800, max: 2600 },
+        speedY: { min: -14, max: -6 },
+        speedX: { min: -3, max: 3 },
+        scale: { start: 1.2, end: 2.6 },
+        alpha: { start: 0.28, end: 0 },
+        tint: 0xffe0c0,
+        frequency: 240,
+      }).setDepth(y + 5);
+    } else if (type === "pool") {
+      // Light rippling across the water
+      for (let i = 0; i < 2; i++) {
+        const glint = this.add.rectangle(left + 20 + i * 30, top + 16 + i * 14, 18, 2, 0xcaf0f8, 0.5).setDepth(y - 55);
+        this.tweens.add({
+          targets: glint, x: glint.x + 14, alpha: 0.1,
+          duration: 1600 + i * 500, yoyo: true, repeat: -1, ease: "Sine.easeInOut",
+        });
+      }
+    } else if (type === "yogaroom") {
+      // A slow, calm glow
+      const aura = this.add.circle(x, y - 6, 26, color, 0.08).setDepth(y - 55);
+      this.tweens.add({
+        targets: aura, scale: 1.25, alpha: 0.16,
+        duration: 3200, yoyo: true, repeat: -1, ease: "Sine.easeInOut",
+      });
+    }
   }
 
   // ── Particle systems ────────────────────────────────────────────────────────
-  private setupParticles(W: number, H: number) {
-    // Ambient dust motes floating through gym
+  private setupParticles(W: number) {
+    // Dust motes drifting through the training floor's light cones
     this.dustEmitter = this.add.particles(0, 0, "particle_dust", {
-      x: { min: 20, max: W - 20 },
-      y: { min: 20, max: H * 0.57 },
+      x: { min: 24, max: W - 24 },
+      y: { min: BACK_WALL_HEIGHT + 10, max: TRAINING_FLOOR_BOTTOM - 10 },
       lifespan: { min: 4000, max: 8000 },
       speedX: { min: -8, max: 8 },
       speedY: { min: -12, max: -4 },
@@ -641,35 +861,71 @@ export class GymScene extends Phaser.Scene {
   }
 
   // ── Interaction logic ──────────────────────────────────────────────────────
-  private tryInteract(worldX: number, worldY: number) {
-    void worldX; void worldY;
-    for (const eq of this.equipment) {
-      const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, eq.x, eq.y);
-      if (dist < 70) {
-        this.activateEquipment(eq);
-        return;
-      }
-    }
-    for (const prop of this.amenities) {
-      const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, prop.x, prop.y);
-      if (dist < 70 && prop.xpGain > 0 && prop.isReady()) {
-        this.useAmenity(prop);
-        return;
-      }
-    }
+  /** Everything on the floor the player can use right now, and what using it does. */
+  private interactables(): Interactable[] {
+    return [
+      ...this.equipment.map((eq) => ({
+        x: eq.x, y: eq.y, reach: 70,
+        available: () => !eq.isOccupied,
+        use: () => this.activateEquipment(eq),
+      })),
+      ...this.amenities
+        .filter((prop) => prop.xpGain > 0)
+        .map((prop) => ({
+          x: prop.x, y: prop.y, reach: 70,
+          available: () => prop.isReady(),
+          use: () => this.useAmenity(prop),
+        })),
+      {
+        x: this.cashPoint.x, y: this.cashPoint.y, reach: 80,
+        available: () => true,
+        use: () => this.collectIncome(),
+      },
+    ];
+  }
 
-    const cashDist = Phaser.Math.Distance.Between(
-      this.player.x, this.player.y,
-      this.cashPoint.x, this.cashPoint.y
-    );
-    if (cashDist < 80) {
-      const collected = this.incomeSystem.collectPending();
-      if (collected > 0) {
-        EventBus.emit("income:collected", { amount: collected, x: this.cashPoint.x, y: this.cashPoint.y });
-        this.incomeSystem.spawnReward(this.cashPoint.x, this.cashPoint.y - 40, `+${collected} 💰 Collected!`, "#ffd700");
-        this.camera.shake(80, 0.002);
-        this.spawnCompletionBurst(this.cashPoint.x, this.cashPoint.y - 20);
+  /**
+   * A tap or click on the floor. Tapping something usable walks the player to
+   * it and uses it on arrival (or straight away if already there). Tapping
+   * empty floor does nothing — walking is the keyboard's or joystick's job.
+   */
+  private handleTap(worldX: number, worldY: number) {
+    if (this.activeEquipment) return; // mid-workout: taps are ignored
+    const target = pickTapTarget(this.interactables(), worldX, worldY);
+    if (!target) return;
+
+    pingTarget(this, target.x, target.y);
+    const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, target.x, target.y);
+    if (dist < target.reach) {
+      target.use();
+      return;
+    }
+    this.controller.walkTo(target.x, target.y + STAND_OFFSET, () => {
+      if (target.available()) target.use();
+    });
+  }
+
+  /** E / Space: use whatever is within reach of the player. */
+  private interactNearby() {
+    if (this.activeEquipment) return;
+    for (const target of this.interactables()) {
+      const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, target.x, target.y);
+      if (dist < target.reach && target.available()) {
+        target.use();
+        return;
       }
+    }
+  }
+
+  private collectIncome() {
+    const collected = this.incomeSystem.collectPending();
+    if (collected > 0) {
+      EventBus.emit("income:collected", { amount: collected, x: this.cashPoint.x, y: this.cashPoint.y });
+      this.incomeSystem.spawnReward(this.cashPoint.x, this.cashPoint.y - 40, `+${collected} 💰 Collected!`, "#ffd700");
+      this.camera.shake(80, 0.002);
+      this.spawnCompletionBurst(this.cashPoint.x, this.cashPoint.y - 20);
+    } else {
+      this.incomeSystem.spawnReward(this.cashPoint.x, this.cashPoint.y - 40, "Nothing to collect yet", "#9aa0b4");
     }
   }
 
@@ -697,6 +953,7 @@ export class GymScene extends Phaser.Scene {
   // ── Update loop ────────────────────────────────────────────────────────────
   update(time: number, delta: number) {
     this.controller.update(delta);
+    this.cameraRig.update();
 
     // Equipment — only tick the player's own active equipment.
     // NPC-occupied equipment sets isOccupied directly (see NpcManager) and must
@@ -777,7 +1034,9 @@ export class GymScene extends Phaser.Scene {
     EventBus.off("workout:complete", this.onWorkoutComplete);
     EventBus.off("scene:switch", this.onSceneSwitch);
     EventBus.off("hud:quit_workout", this.onQuitWorkout);
+    EventBus.off("player:level_up", this.onLevelUp);
     this.controller.destroy();
+    this.cameraRig?.destroy();
     this.dustEmitter?.destroy();
   }
 }

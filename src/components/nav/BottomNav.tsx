@@ -14,6 +14,10 @@ const NAV_ITEMS = [
 export default function BottomNav() {
   const pathname = usePathname();
 
+  // The game screen has its own HUD navigation (scene tabs and ☰ back to the
+  // dashboard); stacking the app nav under it cost ~70px of a phone screen.
+  if (pathname === "/play" || pathname.startsWith("/play/")) return null;
+
   return (
     <nav className="nav-bar" role="navigation" aria-label="Main navigation">
       {NAV_ITEMS.map(({ href, icon, label }) => {

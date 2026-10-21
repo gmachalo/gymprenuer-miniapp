@@ -41,6 +41,8 @@ export type GameEvents = {
   "hud:upgrade_requested": { equipmentId: string };
   "hud:collect_income":    void;
   "hud:quit_workout":      void;
+  /** CSS px of the canvas the React HUD covers, top and bottom — see CameraRig. */
+  "hud:insets":            { top: number; bottom: number };
 };
 
 export const EventBus = mitt<GameEvents>();

@@ -54,7 +54,9 @@ export class Player extends Phaser.GameObjects.Container {
     // ── Player ring ─────────────────────────────────────────────────────────
     this.glowRing = config.scene.add.arc(0, 0, 22, 0, 360, false, 0x6c47ff, 0.2);
     this.add(this.glowRing);
-    config.scene.add.image(0, 0, "player_ring").setScale(0.9);
+    // Must join the container — created loose, it stayed at the world origin
+    // (the top-left corner) instead of following the player.
+    this.add(config.scene.add.image(0, 0, "player_ring").setScale(0.9));
 
     // ── Character sprite ─────────────────────────────────────────────────────
     const texKey = BODY_TYPE_KEY[config.bodyType] ?? "char_average";
